@@ -1135,4 +1135,2316 @@
       }
 
       function getInitials(name) {
-        const clean = (name || 'K').replace(/^@/
+        const clean = (name || 'K').replace(/^@/, '').trim();
+        const parts = clean.split(/\s+/);
+        if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+        return (parts[0].slice(0, 2)).toUpperCase();
+      }
+
+      function escapeHtml(str) {
+        return String(str)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;');
+      }
+
+      function showToast(message, type = 'info') {
+        const colors = {
+          info: 'bg-surface-800 border-indigo-500/40 text-slate-100',
+          success: 'bg-emerald-950/90 border-emerald-500/50 text-emerald-100',
+          warn: 'bg-amber-950/90 border-amber-500/50 text-amber-100',
+          error: 'bg-rose-950/90 border-rose-500/50 text-rose-100'
+        };
+        const el = document.createElement('div');
+        el.className = `pointer-events-auto px-3.5 py-2.5 rounded-xl border text-xs font-medium shadow-xl transition-all duration-200 ${colors[type] || colors.info}`;
+        el.textContent = message;
+        els.toastContainer.appendChild(el);
+        setTimeout(() => {
+          el.style.opacity = '0';
+          el.style.transform = 'translateY(6px)';
+          setTimeout(() => el.remove(), 220);
+        }, 3000);
+      }
+
+      function copyText(text, successMsg) {
+        if (!text) {
+          showToast('Kopyalanacak metin bulunamadı.', 'warn');
+          return;
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(() => {
+            showToast(successMsg, 'success');
+          }).catch(() => fallbackCopy(text, successMsg));
+        } else {
+          fallbackCopy(text, successMsg);
+        }
+      }
+
+      function fallbackCopy(text, successMsg) {
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          ta.remove();
+          showToast(successMsg, 'success');
+        } catch (_) {
+          showToast('Kopyalama başarısız.', 'error');
+        }
+      }
+
+      function ensureAudioContext() {
+        if (!audioCtx) {
+          const AC = window.AudioContext || window.webkitAudioContext;
+          audioCtx = new AC();
+        }
+        if (audioCtx.state === 'suspended') {
+          audioCtx.resume().catch(() => {});
+        }
+        return audioCtx;
+      }
+
+      function playTone(freqs, duration = 0.14, volume = 0.08, type = 'sine') {
+        if (!state.sfxEnabled || state.deafened) return;
+        try {
+          const ctx = ensureAudioContext();
+          const now = ctx.currentTime;
+          freqs.forEach((f, idx) => {
+            const osc = ctx.createOscillator();
+            const g = ctx.createGain();
+            osc.type = type;
+            osc.frequency.setValueAtTime(f, now + idx * 0.07);
+            g.gain.setValueAtTime(0.0001, now + idx * 0.07);
+            g.gain.exponentialRampToValueAtTime(volume * state.outputVol, now + idx * 0.07 + 0.015);
+            g.gain.exponentialRampToValueAtTime(0.0001, now + idx * 0.07 + duration);
+            osc.connect(g);
+            g.connect(ctx.destination);
+            osc.start(now + idx * 0.07);
+            osc.stop(now + idx * 0.07 + duration + 0.02);
+          });
+        } catch (_) {}
+      }
+
+      // --- Optional Live Socket.io Server Integration (active when hosted via seslioda-sunucu) ---
+      function initServerSocket() {
+        if (typeof window.io !== 'function') return;
+        try {
+          socket = window.io();
+          socket.on('connect', () => {
+            state.serverConnected = true;
+            els.networkModeBadge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse"></span> Canlı Sunucu';
+            els.networkModeBadge.className = 'hidden md:inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-sky-500/15 text-sky-300 border border-sky-500/30';
+            socket.emit('register', {
+              name: state.userName,
+              handle: state.userHandle,
+              color: state.userColor
+            });
+            showToast(`Sunucuya bağlandı (${state.userHandle})`, 'success');
+          });
+
+          socket.on('disconnect', () => {
+            state.serverConnected = false;
+            els.networkModeBadge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span> Yeniden Bağlanıyor';
+          });
+
+          socket.on('users_update', (users) => {
+            const nextDir = {};
+            (users || []).forEach(u => {
+              if (u.handle && u.handle !== state.userHandle) {
+                nextDir[u.handle] = { ...u, source: 'server', lastSeen: Date.now() };
+              }
+            });
+            state.onlineDirectory = nextDir;
+            renderOnlineDirectory();
+            refreshChatOnlineStatuses();
+          });
+
+          socket.on('dm_message', (msg) => {
+            const peerHandle = msg.fromHandle;
+            const chat = openOrCreateDirectChat(peerHandle, msg.fromName, msg.fromColor, false);
+            receiveIncomingTgMessage({
+              chatId: chat.id,
+              msgId: msg.msgId,
+              senderId: msg.fromHandle,
+              author: msg.fromName,
+              color: msg.fromColor,
+              text: msg.text,
+              replyTo: msg.replyTo,
+              attachment: msg.attachment,
+              voiceNote: msg.voiceNote
+            });
+          });
+
+          socket.on('group_message', (msg) => {
+            receiveIncomingTgMessage(msg);
+          });
+
+          socket.on('typing', (data) => {
+            const targetChatId = data.toHandle ? dmChatIdFor(data.fromHandle) : data.chatId;
+            showPeerTyping(data.fromName || data.fromHandle, targetChatId);
+          });
+
+          socket.on('reaction', (data) => {
+            const targetChatId = data.toHandle ? dmChatIdFor(data.fromHandle) : data.chatId;
+            applyReactionToTgMessage(targetChatId, data.msgId, data.emoji, false);
+          });
+
+          // Automatic WebRTC signaling over Socket.io
+          socket.on('webrtc_offer', async (data) => {
+            try {
+              if (!state.inVoice) await joinVoiceRoom(false);
+              const conn = createPeerConnection();
+              conn.onicecandidate = (ev) => {
+                if (ev.candidate && socket) {
+                  socket.emit('webrtc_ice', { toHandle: data.fromHandle, candidate: ev.candidate });
+                }
+              };
+              await conn.setRemoteDescription(new RTCSessionDescription(data.offer));
+              const answer = await conn.createAnswer();
+              await conn.setLocalDescription(answer);
+              socket.emit('webrtc_answer', { toHandle: data.fromHandle, answer });
+              state.remotePeer = {
+                id: 'peer',
+                name: data.fromName || data.fromHandle,
+                handle: data.fromHandle,
+                color: data.fromColor || '#10b981',
+                speaking: false,
+                muted: false,
+                connected: true
+              };
+              showToast(`${data.fromHandle} ile sesli arama bağlandı!`, 'success');
+              updateAllUI();
+            } catch (_) {}
+          });
+
+          socket.on('webrtc_answer', async (data) => {
+            if (pc && data.answer) {
+              try { await pc.setRemoteDescription(new RTCSessionDescription(data.answer)); } catch (_) {}
+            }
+          });
+
+          socket.on('webrtc_ice', async (data) => {
+            if (pc && data.candidate) {
+              try { await pc.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch (_) {}
+            }
+          });
+        } catch (_) {}
+      }
+
+      async function startServerVoiceCall(targetHandle) {
+        if (!socket || !state.serverConnected) return false;
+        try {
+          if (!state.inVoice) await joinVoiceRoom(false);
+          const conn = createPeerConnection();
+          const dc = conn.createDataChannel('seslioda');
+          setupDataChannel(dc);
+          conn.onicecandidate = (ev) => {
+            if (ev.candidate && socket) {
+              socket.emit('webrtc_ice', { toHandle: targetHandle, candidate: ev.candidate });
+            }
+          };
+          const offer = await conn.createOffer();
+          await conn.setLocalDescription(offer);
+          socket.emit('webrtc_offer', { toHandle: targetHandle, offer });
+          showToast(`${targetHandle} aranıyor...`, 'info');
+          return true;
+        } catch (_) {
+          return false;
+        }
+      }
+
+      // --- Direct Chat & @Username Helpers ---
+      function dmChatIdFor(handle) {
+        return 'dm:' + normalizeHandle(handle);
+      }
+
+      function openOrCreateDirectChat(handle, displayName, color, activate = true) {
+        const norm = normalizeHandle(handle);
+        const chatId = dmChatIdFor(norm);
+        let chat = state.tgChats.find(c => c.id === chatId);
+        const onlineEntry = state.onlineDirectory[norm];
+        if (!chat) {
+          chat = {
+            id: chatId,
+            name: displayName || (onlineEntry && onlineEntry.name) || norm,
+            handle: norm,
+            type: 'dm',
+            color: color || (onlineEntry && onlineEntry.color) || AVATAR_COLORS[state.tgChats.length % AVATAR_COLORS.length],
+            status: onlineEntry ? `${norm} • çevrimiçi` : `${norm} • bağlantı bekliyor`,
+            pinnedId: null,
+            unread: 0
+          };
+          state.tgChats.unshift(chat);
+          state.tgMessagesByChat[chatId] = [];
+        } else {
+          if (displayName && chat.name === norm) chat.name = displayName;
+          chat.status = onlineEntry ? `${norm} • çevrimiçi` : `${norm} • bağlantı bekliyor`;
+        }
+        if (activate) {
+          state.activeTgChatId = chat.id;
+          chat.unread = 0;
+          setViewMode('chat');
+        }
+        renderTgChatsList();
+        return chat;
+      }
+
+      function refreshChatOnlineStatuses() {
+        state.tgChats.forEach(c => {
+          if (c.type === 'dm' && c.handle) {
+            const isOnline = !!state.onlineDirectory[c.handle] || (state.remotePeer && state.remotePeer.handle === c.handle);
+            c.status = isOnline ? `${c.handle} • çevrimiçi` : `${c.handle} • çevrimdışı`;
+          }
+        });
+        renderTgChatsList();
+        if (state.viewMode === 'chat') renderTgActiveChat();
+      }
+
+      function renderOnlineDirectory() {
+        const users = Object.values(state.onlineDirectory).filter(u => u.handle !== state.userHandle);
+        els.onlineDirectoryCount.textContent = `${users.length} kişi`;
+        els.modalMyHandle.textContent = state.userHandle;
+        els.onlineUsersList.innerHTML = '';
+
+        if (users.length === 0) {
+          els.onlineUsersList.innerHTML = `
+            <div class="rounded-xl bg-surface-850/70 border border-slate-800 p-3.5 text-center text-xs text-slate-400">
+              Şu an başka çevrimiçi kullanıcı görünmüyor. Yukarıya arkadaşının <span class="font-mono text-sky-300">@kullaniciadi</span> bilgisini yazarak sohbet oluşturabilirsin.
+            </div>
+          `;
+          return;
+        }
+
+        users.forEach(u => {
+          const row = document.createElement('div');
+          row.className = 'flex items-center justify-between gap-2.5 p-2.5 rounded-xl bg-surface-850 border border-slate-800 hover:border-sky-500/40 transition';
+          row.innerHTML = `
+            <div class="flex items-center gap-2.5 min-w-0">
+              <div class="relative w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold text-white shrink-0" style="background-color: ${u.color || '#10b981'};">
+                ${escapeHtml(getInitials(u.name || u.handle))}
+                <span class="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-surface-900"></span>
+              </div>
+              <div class="min-w-0">
+                <div class="text-sm font-semibold text-white truncate">${escapeHtml(u.name || u.handle)}</div>
+                <div class="text-xs font-mono text-sky-400 truncate">${escapeHtml(u.handle)}</div>
+              </div>
+            </div>
+            <button type="button" class="px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold transition shrink-0">Mesaj Yaz</button>
+          `;
+          row.querySelector('button').addEventListener('click', () => {
+            openOrCreateDirectChat(u.handle, u.name, u.color, true);
+            closeModal('modal-find-user');
+            closeMobileDrawers();
+          });
+          els.onlineUsersList.appendChild(row);
+        });
+      }
+
+      // --- View Mode Switching ---
+      function setViewMode(mode) {
+        state.viewMode = mode;
+        state.sidebarTab = mode === 'chat' ? 'tg' : 'voice';
+
+        const isChat = mode === 'chat';
+        els.voiceMainView.classList.toggle('hidden', isChat);
+        els.tgMainView.classList.toggle('hidden', !isChat);
+
+        if (isChat) {
+          els.rightChat.classList.add('xl:hidden');
+        } else {
+          els.rightChat.classList.remove('xl:hidden');
+        }
+
+        els.btnModeVoice.className = isChat
+          ? 'inline-flex items-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-lg text-xs font-semibold text-slate-400 hover:text-white transition'
+          : 'inline-flex items-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 text-white transition';
+
+        els.btnModeChat.className = isChat
+          ? 'relative inline-flex items-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-sky-600 text-white transition'
+          : 'relative inline-flex items-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-lg text-xs font-semibold text-slate-400 hover:text-white transition';
+
+        setSidebarTab(state.sidebarTab);
+
+        if (isChat) {
+          const activeChat = state.tgChats.find(c => c.id === state.activeTgChatId);
+          if (activeChat) activeChat.unread = 0;
+          renderTgChatsList();
+          renderTgActiveChat();
+        } else {
+          setTimeout(resizeCanvas, 20);
+        }
+        updateControlsUI();
+      }
+
+      function setSidebarTab(tab) {
+        state.sidebarTab = tab;
+        const isTg = tab === 'tg';
+        els.sidebarVoicePanel.classList.toggle('hidden', isTg);
+        els.sidebarTgPanel.classList.toggle('hidden', !isTg);
+
+        els.sidebarTabVoice.className = isTg
+          ? 'py-1.5 px-2 rounded-lg text-xs font-semibold text-slate-400 hover:text-white hover:bg-surface-850 border border-transparent transition flex items-center justify-center gap-1.5'
+          : 'py-1.5 px-2 rounded-lg text-xs font-semibold bg-surface-800 text-white border border-slate-700/70 transition flex items-center justify-center gap-1.5';
+
+        els.sidebarTabTg.className = isTg
+          ? 'py-1.5 px-2 rounded-lg text-xs font-semibold bg-surface-800 text-white border border-slate-700/70 transition flex items-center justify-center gap-1.5'
+          : 'py-1.5 px-2 rounded-lg text-xs font-semibold text-slate-400 hover:text-white hover:bg-surface-850 border border-transparent transition flex items-center justify-center gap-1.5';
+      }
+
+      // --- Audio Capture & Processing ---
+      async function joinVoiceRoom(forceSimulated = false) {
+        const ctx = ensureAudioContext();
+        stopAudioPipeline();
+
+        try {
+          if (!forceSimulated && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+            const audioConstraints = {
+              echoCancellation: state.echoCancellation,
+              noiseSuppression: state.noiseSuppression,
+              autoGainControl: true
+            };
+            if (state.selectedDeviceId && state.selectedDeviceId !== 'default') {
+              audioConstraints.deviceId = { exact: state.selectedDeviceId };
+            }
+            rawStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+            state.isSimulatedMic = false;
+            populateAudioDevices();
+          } else {
+            throw new Error('simulated');
+          }
+        } catch (err) {
+          state.isSimulatedMic = true;
+          if (!forceSimulated) {
+            showToast('Mikrofona erişilemedi — Sanal Test Mikrofonu moduna geçildi.', 'warn');
+          } else {
+            showToast('Sanal test sinyali başlatıldı.', 'info');
+          }
+        }
+
+        gainNode = ctx.createGain();
+        analyserNode = ctx.createAnalyser();
+        analyserNode.fftSize = 256;
+        analyserNode.smoothingTimeConstant = 0.78;
+        destNode = ctx.createMediaStreamDestination();
+        loopbackGainNode = ctx.createGain();
+        loopbackGainNode.gain.value = state.loopback && !state.deafened ? state.outputVol * 0.75 : 0;
+
+        if (!state.isSimulatedMic && rawStream) {
+          micSourceNode = ctx.createMediaStreamSource(rawStream);
+          micSourceNode.connect(gainNode);
+        } else {
+          simOscNode = ctx.createOscillator();
+          simGainNode = ctx.createGain();
+          simOscNode.type = 'triangle';
+          simOscNode.frequency.value = 185;
+          simGainNode.gain.value = 0.0;
+          simOscNode.connect(simGainNode);
+          simGainNode.connect(gainNode);
+          simOscNode.start();
+
+          let step = 0;
+          simInterval = setInterval(() => {
+            if (!simGainNode || !simOscNode || !audioCtx) return;
+            const t = audioCtx.currentTime;
+            const active = (step % 7) < 4;
+            const freq = 160 + ((step * 37) % 140);
+            simOscNode.frequency.setTargetAtTime(freq, t, 0.05);
+            simGainNode.gain.setTargetAtTime(active ? 0.16 : 0.005, t, 0.06);
+            step++;
+          }, 220);
+        }
+
+        gainNode.connect(analyserNode);
+        gainNode.connect(destNode);
+        gainNode.connect(loopbackGainNode);
+        loopbackGainNode.connect(ctx.destination);
+
+        processedStream = destNode.stream;
+        state.inVoice = true;
+        applyAudioGainState();
+        attachStreamToPeerConnection();
+        playTone([440, 587], 0.14, 0.08);
+        broadcastPresence();
+        updateAllUI();
+        startVisualizerLoop();
+      }
+
+      function stopAudioPipeline() {
+        if (simInterval) { clearInterval(simInterval); simInterval = null; }
+        if (simOscNode) { try { simOscNode.stop(); simOscNode.disconnect(); } catch (_) {} simOscNode = null; }
+        if (simGainNode) { try { simGainNode.disconnect(); } catch (_) {} simGainNode = null; }
+        if (micSourceNode) { try { micSourceNode.disconnect(); } catch (_) {} micSourceNode = null; }
+        if (gainNode) { try { gainNode.disconnect(); } catch (_) {} gainNode = null; }
+        if (analyserNode) { try { analyserNode.disconnect(); } catch (_) {} analyserNode = null; }
+        if (loopbackGainNode) { try { loopbackGainNode.disconnect(); } catch (_) {} loopbackGainNode = null; }
+        if (rawStream) {
+          rawStream.getTracks().forEach(t => t.stop());
+          rawStream = null;
+        }
+        processedStream = null;
+      }
+
+      function leaveVoiceRoom() {
+        stopAudioPipeline();
+        state.inVoice = false;
+        state.isSimulatedMic = false;
+        state.localSpeaking = false;
+        state.localLevel = 0;
+        state.loopback = false;
+        playTone([440, 311], 0.14, 0.08);
+        broadcastPresence();
+        updateAllUI();
+      }
+
+      function isEffectivelyMuted() {
+        if (!state.inVoice) return true;
+        if (state.micMuted || state.deafened) return true;
+        if (state.pttEnabled && !state.pttActive) return true;
+        return false;
+      }
+
+      function applyAudioGainState() {
+        const muted = isEffectivelyMuted();
+        if (gainNode && audioCtx) {
+          gainNode.gain.setTargetAtTime(muted ? 0 : state.micGain, audioCtx.currentTime, 0.02);
+        }
+        if (processedStream) {
+          processedStream.getAudioTracks().forEach(t => { t.enabled = !muted; });
+        }
+        if (loopbackGainNode && audioCtx) {
+          const lbVol = (state.loopback && !state.deafened && !muted) ? state.outputVol * 0.7 : 0;
+          loopbackGainNode.gain.setTargetAtTime(lbVol, audioCtx.currentTime, 0.02);
+        }
+        els.remoteAudio.volume = state.deafened ? 0 : state.outputVol;
+        els.remoteAudio.muted = state.deafened;
+      }
+
+      async function populateAudioDevices() {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+        try {
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          const inputs = devices.filter(d => d.kind === 'audioinput');
+          els.selectMic.innerHTML = '';
+          if (inputs.length === 0) {
+            const opt = document.createElement('option');
+            opt.value = 'default';
+            opt.textContent = 'Varsayılan Mikrofon';
+            els.selectMic.appendChild(opt);
+            return;
+          }
+          inputs.forEach((d, i) => {
+            const opt = document.createElement('option');
+            opt.value = d.deviceId;
+            opt.textContent = d.label || `Mikrofon ${i + 1}`;
+            if (d.deviceId === state.selectedDeviceId) opt.selected = true;
+            els.selectMic.appendChild(opt);
+          });
+        } catch (_) {}
+      }
+
+      // --- Visualizer Loop ---
+      function resizeCanvas() {
+        const rect = els.canvas.getBoundingClientRect();
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        if (rect.width > 0 && rect.height > 0) {
+          els.canvas.width = Math.floor(rect.width * dpr);
+          els.canvas.height = Math.floor(rect.height * dpr);
+        }
+      }
+
+      function startVisualizerLoop() {
+        if (vizRafId) cancelAnimationFrame(vizRafId);
+        const ctx2d = els.canvas.getContext('2d');
+
+        function draw() {
+          vizRafId = requestAnimationFrame(draw);
+          const w = els.canvas.width;
+          const h = els.canvas.height;
+          if (!w || !h) return;
+
+          ctx2d.clearRect(0, 0, w, h);
+
+          ctx2d.strokeStyle = 'rgba(148, 163, 184, 0.14)';
+          ctx2d.lineWidth = 1;
+          ctx2d.beginPath();
+          ctx2d.moveTo(0, h / 2);
+          ctx2d.lineTo(w, h / 2);
+          ctx2d.stroke();
+
+          if (!state.inVoice || !analyserNode) {
+            els.dbMeterText.textContent = '0%';
+            return;
+          }
+
+          const freqData = new Uint8Array(analyserNode.frequencyBinCount);
+          analyserNode.getByteFrequencyData(freqData);
+
+          let sum = 0;
+          for (let i = 0; i < freqData.length; i++) sum += freqData[i];
+          const avg = sum / freqData.length;
+          const muted = isEffectivelyMuted();
+          const levelPct = muted ? 0 : Math.min(100, Math.round((avg / 110) * 100));
+          const speakingNow = !muted && levelPct > 8;
+
+          els.dbMeterText.textContent = levelPct + '%';
+
+          if (speakingNow !== state.localSpeaking) {
+            state.localSpeaking = speakingNow;
+            updateSpeakingRings();
+            sendPeerSignal({ type: 'speaking', speaking: speakingNow });
+          }
+
+          const barCount = 36;
+          const step = Math.max(1, Math.floor((freqData.length * 0.65) / barCount));
+          const gap = w / barCount;
+          const barWidth = Math.max(3, gap * 0.52);
+
+          for (let i = 0; i < barCount; i++) {
+            const val = muted ? 0 : freqData[i * step] / 255;
+            const barH = Math.max(4, val * (h * 0.84));
+            const x = i * gap + (gap - barWidth) / 2;
+            const y = (h - barH) / 2;
+
+            const grad = ctx2d.createLinearGradient(0, y, 0, y + barH);
+            if (speakingNow) {
+              grad.addColorStop(0, '#34d399');
+              grad.addColorStop(1, '#6366f1');
+            } else {
+              grad.addColorStop(0, '#475569');
+              grad.addColorStop(1, '#334155');
+            }
+            ctx2d.fillStyle = grad;
+            ctx2d.beginPath();
+            ctx2d.roundRect(x, y, barWidth, barH, 4);
+            ctx2d.fill();
+          }
+        }
+        draw();
+      }
+
+      // --- WebRTC P2P Serverless Signaling ---
+      function createPeerConnection() {
+        if (pc) {
+          try { pc.close(); } catch (_) {}
+        }
+        pc = new RTCPeerConnection({
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' }
+          ]
+        });
+
+        pc.ontrack = (event) => {
+          if (event.streams && event.streams[0]) {
+            els.remoteAudio.srcObject = event.streams[0];
+            els.remoteAudio.volume = state.deafened ? 0 : state.outputVol;
+            els.remoteAudio.play().catch(() => {});
+          }
+        };
+
+        pc.onconnectionstatechange = () => {
+          if (!pc) return;
+          const st = pc.connectionState;
+          if (st === 'connected') {
+            showToast('P2P sesli ve mesaj bağlantısı kuruldu!', 'success');
+            playTone([523, 659, 784], 0.14, 0.09);
+            els.pingBadge.textContent = '~24 ms';
+            if (!state.remotePeer) {
+              state.remotePeer = { id: 'peer', name: 'Bağlı Kullanıcı', handle: '@arkadas', color: '#10b981', speaking: false, muted: false, connected: true };
+            } else {
+              state.remotePeer.connected = true;
+            }
+            openOrCreateDirectChat(state.remotePeer.handle, state.remotePeer.name, state.remotePeer.color, false);
+            updateAllUI();
+          } else if (st === 'disconnected' || st === 'failed' || st === 'closed') {
+            if (state.remotePeer) {
+              state.remotePeer = null;
+              els.pingBadge.textContent = '-- ms';
+              showToast('P2P bağlantısı sonlandı.', 'warn');
+              refreshChatOnlineStatuses();
+              updateAllUI();
+            }
+          }
+        };
+
+        pc.ondatachannel = (event) => {
+          setupDataChannel(event.channel);
+        };
+
+        attachStreamToPeerConnection();
+        return pc;
+      }
+
+      function attachStreamToPeerConnection() {
+        if (!pc || !processedStream) return;
+        const senders = pc.getSenders();
+        processedStream.getAudioTracks().forEach((track) => {
+          const existing = senders.find(s => s.track && s.track.kind === 'audio');
+          if (existing) {
+            existing.replaceTrack(track).catch(() => {});
+          } else {
+            pc.addTrack(track, processedStream);
+          }
+        });
+      }
+
+      function setupDataChannel(dc) {
+        dataChannel = dc;
+        dc.onopen = () => {
+          sendPeerSignal({
+            type: 'hello',
+            name: state.userName,
+            handle: state.userHandle,
+            color: state.userColor,
+            muted: isEffectivelyMuted()
+          });
+        };
+        dc.onmessage = (e) => {
+          try {
+            const msg = JSON.parse(e.data);
+            handlePeerSignal(msg);
+          } catch (_) {}
+        };
+      }
+
+      function sendPeerSignal(payload) {
+        if (dataChannel && dataChannel.readyState === 'open') {
+          try { dataChannel.send(JSON.stringify(payload)); } catch (_) {}
+        }
+      }
+
+      function handlePeerSignal(msg) {
+        if (!msg || !msg.type) return;
+        if (msg.type === 'hello') {
+          const peerHandle = normalizeHandle(msg.handle || msg.name || 'arkadas');
+          state.remotePeer = {
+            id: 'peer',
+            name: msg.name || peerHandle,
+            handle: peerHandle,
+            color: msg.color || '#10b981',
+            speaking: false,
+            muted: !!msg.muted,
+            connected: true
+          };
+          state.onlineDirectory[peerHandle] = {
+            id: 'peer',
+            name: state.remotePeer.name,
+            handle: peerHandle,
+            color: state.remotePeer.color,
+            source: 'p2p',
+            lastSeen: Date.now()
+          };
+          openOrCreateDirectChat(peerHandle, state.remotePeer.name, state.remotePeer.color, false);
+          renderOnlineDirectory();
+          addRoomMessage(state.activeRoomId, { system: true, text: `${state.remotePeer.name} (${peerHandle}) sesli bağlantıya katıldı.`, time: nowTime() });
+          updateAllUI();
+        } else if (msg.type === 'speaking' && state.remotePeer) {
+          state.remotePeer.speaking = !!msg.speaking;
+          updateSpeakingRings();
+        } else if (msg.type === 'mute' && state.remotePeer) {
+          state.remotePeer.muted = !!msg.muted;
+          renderParticipants();
+        } else if (msg.type === 'chat') {
+          addRoomMessage(state.activeRoomId, {
+            author: msg.name || 'Katılımcı',
+            color: msg.color || '#10b981',
+            text: msg.text,
+            time: nowTime()
+          });
+        } else if (msg.type === 'reaction') {
+          spawnReactionOnCard('peer', msg.emoji);
+        } else if (msg.type === 'tg_msg') {
+          if (msg.isDm && msg.fromHandle) {
+            const c = openOrCreateDirectChat(msg.fromHandle, msg.author, msg.color, false);
+            receiveIncomingTgMessage({ ...msg, chatId: c.id });
+          } else {
+            receiveIncomingTgMessage(msg);
+          }
+        } else if (msg.type === 'tg_typing') {
+          const cid = msg.isDm && msg.fromHandle ? dmChatIdFor(msg.fromHandle) : msg.chatId;
+          showPeerTyping(msg.name || msg.fromHandle, cid);
+        } else if (msg.type === 'tg_react') {
+          const cid = msg.isDm && msg.fromHandle ? dmChatIdFor(msg.fromHandle) : msg.chatId;
+          applyReactionToTgMessage(cid, msg.msgId, msg.emoji, false);
+        }
+      }
+
+      function waitForIceGathering(peerConn, timeoutMs = 2200) {
+        return new Promise((resolve) => {
+          if (peerConn.iceGatheringState === 'complete') return resolve();
+          const timer = setTimeout(resolve, timeoutMs);
+          peerConn.onicegatheringstatechange = () => {
+            if (peerConn.iceGatheringState === 'complete') {
+              clearTimeout(timer);
+              resolve();
+            }
+          };
+        });
+      }
+
+      async function handleCreateOffer() {
+        try {
+          if (!state.inVoice) await joinVoiceRoom(false);
+          const conn = createPeerConnection();
+          const dc = conn.createDataChannel('seslioda');
+          setupDataChannel(dc);
+          const offer = await conn.createOffer();
+          await conn.setLocalDescription(offer);
+          await waitForIceGathering(conn);
+          const payload = btoa(unescape(encodeURIComponent(JSON.stringify(conn.localDescription))));
+          els.hostOfferCode.value = payload;
+          showToast('Davet kodu oluşturuldu! Arkadaşına gönder.', 'success');
+        } catch (err) {
+          showToast('Kod oluşturulurken bir hata oluştu.', 'error');
+        }
+      }
+
+      async function handleAcceptAnswer() {
+        const raw = els.hostAnswerInput.value.trim();
+        if (!raw) {
+          showToast('Lütfen arkadaşından gelen yanıt kodunu yapıştır.', 'warn');
+          return;
+        }
+        if (!pc) {
+          showToast('Önce Adım 1 ile davet kodu oluşturmalısın.', 'warn');
+          return;
+        }
+        try {
+          const desc = JSON.parse(decodeURIComponent(escape(atob(raw))));
+          await pc.setRemoteDescription(new RTCSessionDescription(desc));
+          showToast('Yanıt kabul edildi, bağlantı kuruluyor...', 'info');
+          closeModal('modal-connect');
+        } catch (_) {
+          showToast('Geçersiz yanıt kodu. Lütfen tam kodu yapıştır.', 'error');
+        }
+      }
+
+      async function handleCreateAnswer() {
+        const raw = els.guestOfferInput.value.trim();
+        if (!raw) {
+          showToast('Lütfen önce davet kodunu yapıştır.', 'warn');
+          return;
+        }
+        try {
+          if (!state.inVoice) await joinVoiceRoom(false);
+          const desc = JSON.parse(decodeURIComponent(escape(atob(raw))));
+          const conn = createPeerConnection();
+          await conn.setRemoteDescription(new RTCSessionDescription(desc));
+          const answer = await conn.createAnswer();
+          await conn.setLocalDescription(answer);
+          await waitForIceGathering(conn);
+          const payload = btoa(unescape(encodeURIComponent(JSON.stringify(conn.localDescription))));
+          els.guestAnswerCode.value = payload;
+          showToast('Yanıt kodu hazır! Kopyalayıp arkadaşına gönder.', 'success');
+        } catch (_) {
+          showToast('Geçersiz davet kodu. Lütfen kontrol et.', 'error');
+        }
+      }
+
+      // --- Same-Browser Multi-Tab @Username Discovery & Messaging ---
+      function initBroadcastChannel() {
+        if (typeof BroadcastChannel === 'undefined') return;
+        try {
+          broadcastChannel = new BroadcastChannel('seslioda_sync_v2');
+          broadcastChannel.onmessage = (e) => {
+            const d = e.data;
+            if (!d || d.senderId === state.userId) return;
+            if (d.type === 'presence') {
+              if (d.handle && d.handle !== state.userHandle) {
+                state.onlineDirectory[d.handle] = {
+                  id: d.senderId,
+                  name: d.name,
+                  handle: d.handle,
+                  color: d.color,
+                  source: 'tab',
+                  lastSeen: Date.now()
+                };
+                renderOnlineDirectory();
+                refreshChatOnlineStatuses();
+              }
+              if (d.roomId === state.activeRoomId && d.inVoice) {
+                state.tabPeers[d.senderId] = {
+                  id: d.senderId,
+                  name: d.name,
+                  handle: d.handle,
+                  color: d.color,
+                  muted: d.muted,
+                  speaking: false
+                };
+              } else {
+                delete state.tabPeers[d.senderId];
+              }
+              renderParticipants();
+            } else if (d.type === 'who_is_online') {
+              broadcastPresence();
+            } else if (d.type === 'chat' && d.roomId === state.activeRoomId) {
+              addRoomMessage(d.roomId, { author: d.name, color: d.color, text: d.text, time: nowTime() });
+            } else if (d.type === 'reaction' && d.roomId === state.activeRoomId) {
+              spawnReactionOnCard(d.senderId, d.emoji);
+            } else if (d.type === 'tg_msg') {
+              if (d.isDm) {
+                if (d.toHandle === state.userHandle) {
+                  const c = openOrCreateDirectChat(d.fromHandle, d.author, d.color, false);
+                  receiveIncomingTgMessage({ ...d, chatId: c.id });
+                }
+              } else {
+                receiveIncomingTgMessage(d);
+              }
+            } else if (d.type === 'tg_typing') {
+              if (d.isDm) {
+                if (d.toHandle === state.userHandle) {
+                  showPeerTyping(d.name || d.fromHandle, dmChatIdFor(d.fromHandle));
+                }
+              } else {
+                showPeerTyping(d.name || d.fromHandle, d.chatId);
+              }
+            } else if (d.type === 'tg_react') {
+              const cid = d.isDm ? (d.toHandle === state.userHandle ? dmChatIdFor(d.fromHandle) : null) : d.chatId;
+              if (cid) applyReactionToTgMessage(cid, d.msgId, d.emoji, false);
+            }
+          };
+          broadcastPresence();
+          broadcastChannel.postMessage({ type: 'who_is_online', senderId: state.userId });
+        } catch (_) {}
+      }
+
+      function broadcastPresence() {
+        if (!broadcastChannel) return;
+        try {
+          broadcastChannel.postMessage({
+            type: 'presence',
+            senderId: state.userId,
+            roomId: state.activeRoomId,
+            name: state.userName,
+            handle: state.userHandle,
+            color: state.userColor,
+            inVoice: state.inVoice,
+            muted: isEffectivelyMuted()
+          });
+        } catch (_) {}
+      }
+
+      // --- TELEGRAM MESSAGING ENGINE ---
+      function receiveIncomingTgMessage(payload) {
+        const targetChatId = state.tgChats.some(c => c.id === payload.chatId) ? payload.chatId : 'genel-grup';
+        if (!state.tgMessagesByChat[targetChatId]) state.tgMessagesByChat[targetChatId] = [];
+        const msg = {
+          id: payload.msgId || ('tg-' + Date.now() + Math.random()),
+          senderId: payload.senderId || 'peer',
+          author: payload.author || payload.fromHandle || 'Katılımcı',
+          color: payload.color || '#10b981',
+          outgoing: false,
+          text: payload.text || '',
+          replyTo: payload.replyTo || null,
+          attachment: payload.attachment || null,
+          voiceNote: payload.voiceNote || null,
+          time: nowTime(),
+          read: true,
+          reactions: {}
+        };
+        state.tgMessagesByChat[targetChatId].push(msg);
+
+        const chatObj = state.tgChats.find(c => c.id === targetChatId);
+        if (chatObj && (state.viewMode !== 'chat' || state.activeTgChatId !== targetChatId)) {
+          chatObj.unread = (chatObj.unread || 0) + 1;
+        }
+        playTone([620, 820], 0.09, 0.05);
+        renderTgChatsList();
+        if (state.viewMode === 'chat' && state.activeTgChatId === targetChatId) {
+          renderTgActiveChat();
+        }
+      }
+
+      function showPeerTyping(name, chatId) {
+        if (state.viewMode !== 'chat' || state.activeTgChatId !== chatId) return;
+        els.tgTypingText.textContent = `${name} yazıyor...`;
+        els.tgTypingBar.classList.remove('hidden');
+        if (typingTimeout) clearTimeout(typingTimeout);
+        typingTimeout = setTimeout(() => {
+          els.tgTypingBar.classList.add('hidden');
+        }, 2200);
+      }
+
+      function sendTgMessage({ text = '', attachment = null, voiceNote = null }) {
+        const chatId = state.activeTgChatId;
+        const chatObj = state.tgChats.find(c => c.id === chatId);
+        const isDm = !!(chatObj && chatObj.type === 'dm' && chatObj.handle);
+        const isSaved = !!(chatObj && chatObj.type === 'saved');
+
+        if (!state.tgMessagesByChat[chatId]) state.tgMessagesByChat[chatId] = [];
+        const msg = {
+          id: 'tg-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+          senderId: state.userId,
+          author: state.userName,
+          color: state.userColor,
+          outgoing: true,
+          text,
+          replyTo: state.tgReplyTo ? { ...state.tgReplyTo } : null,
+          attachment,
+          voiceNote,
+          time: nowTime(),
+          read: true,
+          reactions: {}
+        };
+        state.tgMessagesByChat[chatId].push(msg);
+        state.tgReplyTo = null;
+        els.tgReplyBar.classList.add('hidden');
+        playTone([540], 0.06, 0.04);
+
+        if (!isSaved) {
+          const safeAttachment = attachment && (!attachment.dataUrl || attachment.dataUrl.length < 48000)
+            ? attachment
+            : (attachment ? { name: attachment.name, size: attachment.size, isImage: false } : null);
+          const safeVoice = voiceNote && voiceNote.duration ? { duration: voiceNote.duration, simulated: true } : null;
+
+          const wirePayload = {
+            type: 'tg_msg',
+            senderId: state.userId,
+            chatId,
+            isDm,
+            toHandle: isDm ? chatObj.handle : null,
+            fromHandle: state.userHandle,
+            msgId: msg.id,
+            author: state.userName,
+            color: state.userColor,
+            text,
+            replyTo: msg.replyTo,
+            attachment: safeAttachment,
+            voiceNote: safeVoice
+          };
+
+          if (socket && state.serverConnected) {
+            if (isDm) {
+              socket.emit('dm_message', {
+                toHandle: chatObj.handle,
+                msgId: msg.id,
+                text,
+                replyTo: msg.replyTo,
+                attachment: safeAttachment,
+                voiceNote: safeVoice
+              });
+            } else {
+              socket.emit('group_message', wirePayload);
+            }
+          }
+
+          sendPeerSignal(wirePayload);
+          if (broadcastChannel) {
+            try { broadcastChannel.postMessage(wirePayload); } catch (_) {}
+          }
+        }
+
+        renderTgChatsList();
+        renderTgActiveChat();
+      }
+
+      function applyReactionToTgMessage(chatId, msgId, emoji, emit = true) {
+        const msgs = state.tgMessagesByChat[chatId] || [];
+        const msg = msgs.find(m => m.id === msgId);
+        if (!msg) return;
+        if (!msg.reactions) msg.reactions = {};
+        if (msg.reactions[emoji]) {
+          msg.reactions[emoji] = Math.max(0, msg.reactions[emoji] - 1);
+          if (msg.reactions[emoji] === 0) delete msg.reactions[emoji];
+        } else {
+          msg.reactions[emoji] = 1;
+        }
+        if (emit) {
+          const chatObj = state.tgChats.find(c => c.id === chatId);
+          const isDm = !!(chatObj && chatObj.type === 'dm' && chatObj.handle);
+          const payload = {
+            type: 'tg_react',
+            senderId: state.userId,
+            chatId,
+            isDm,
+            toHandle: isDm ? chatObj.handle : null,
+            fromHandle: state.userHandle,
+            msgId,
+            emoji
+          };
+          if (socket && state.serverConnected) socket.emit('reaction', payload);
+          sendPeerSignal(payload);
+          if (broadcastChannel) {
+            try { broadcastChannel.postMessage(payload); } catch (_) {}
+          }
+        }
+        renderTgActiveChat();
+      }
+
+      function getLastMsgPreview(chatId) {
+        const msgs = state.tgMessagesByChat[chatId] || [];
+        if (msgs.length === 0) {
+          const c = state.tgChats.find(x => x.id === chatId);
+          return c && c.handle ? `${c.handle}` : 'Henüz mesaj yok';
+        }
+        const last = msgs[msgs.length - 1];
+        if (last.voiceNote) return `🎤 Sesli mesaj (${formatDuration(last.voiceNote.duration || 1)})`;
+        if (last.attachment) return last.attachment.isImage ? '🖼️ Fotoğraf' : `📎 ${last.attachment.name}`;
+        return last.text || '';
+      }
+
+      function getLastMsgTime(chatId) {
+        const msgs = state.tgMessagesByChat[chatId] || [];
+        if (msgs.length === 0) return '';
+        return msgs[msgs.length - 1].time || '';
+      }
+
+      function renderTgChatsList() {
+        const q = state.tgChatSearchQuery.trim().toLowerCase();
+        els.tgChatsList.innerHTML = '';
+
+        let totalUnread = 0;
+        state.tgChats.forEach(c => { totalUnread += (c.unread || 0); });
+        if (totalUnread > 0) {
+          els.tgTotalUnread.textContent = totalUnread > 99 ? '99+' : String(totalUnread);
+          els.tgTotalUnread.classList.remove('hidden');
+        } else {
+          els.tgTotalUnread.classList.add('hidden');
+        }
+
+        const filtered = state.tgChats.filter(c =>
+          !q || c.name.toLowerCase().includes(q) || (c.handle && c.handle.toLowerCase().includes(q))
+        );
+        if (filtered.length === 0) {
+          els.tgChatsList.innerHTML = '<div class="text-xs text-slate-500 text-center py-6">Eşleşen sohbet bulunamadı</div>';
+          return;
+        }
+
+        filtered.forEach(chat => {
+          const isActive = chat.id === state.activeTgChatId && state.viewMode === 'chat';
+          const isOnline = chat.type === 'dm' && (!!state.onlineDirectory[chat.handle] || (state.remotePeer && state.remotePeer.handle === chat.handle));
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = `w-full flex items-center gap-2.5 p-2.5 rounded-xl text-left transition ${
+            isActive
+              ? 'bg-sky-600/20 border border-sky-500/35'
+              : 'hover:bg-surface-800 border border-transparent'
+          }`;
+
+          const iconHtml = chat.type === 'saved'
+            ? '<i data-lucide="bookmark" class="w-4 h-4 text-white"></i>'
+            : escapeHtml(getInitials(chat.name));
+
+          btn.innerHTML = `
+            <div class="relative w-10 h-10 rounded-full flex items-center justify-center text-xs font-bold text-white shrink-0" style="background-color: ${chat.color};">
+              ${iconHtml}
+              ${isOnline ? '<span class="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-surface-900"></span>' : ''}
+            </div>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center justify-between gap-1">
+                <span class="text-sm font-semibold text-white truncate">${escapeHtml(chat.name)}</span>
+                <span class="text-[10px] text-slate-500 shrink-0">${escapeHtml(getLastMsgTime(chat.id))}</span>
+              </div>
+              <div class="flex items-center justify-between gap-1.5 mt-0.5">
+                <span class="text-xs text-slate-400 truncate">${escapeHtml(getLastMsgPreview(chat.id))}</span>
+                ${chat.unread > 0 ? `<span class="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-sky-500 text-white shrink-0">${chat.unread}</span>` : ''}
+              </div>
+            </div>
+          `;
+          btn.addEventListener('click', () => {
+            state.activeTgChatId = chat.id;
+            chat.unread = 0;
+            state.tgReplyTo = null;
+            els.tgReplyBar.classList.add('hidden');
+            setViewMode('chat');
+            closeMobileDrawers();
+          });
+          els.tgChatsList.appendChild(btn);
+        });
+        lucide.createIcons();
+      }
+
+      function renderTgActiveChat() {
+        const chat = state.tgChats.find(c => c.id === state.activeTgChatId) || state.tgChats[0];
+        if (!chat) return;
+
+        els.tgHeaderAvatar.style.backgroundColor = chat.color;
+        els.tgHeaderAvatar.innerHTML = chat.type === 'saved'
+          ? '<i data-lucide="bookmark" class="w-5 h-5 text-white"></i>'
+          : escapeHtml(getInitials(chat.name));
+        els.tgHeaderTitle.textContent = chat.name;
+        els.tgHeaderSub.textContent = chat.status;
+        if (chat.type === 'group') {
+          els.tgHeaderBadge.textContent = 'Grup';
+          els.tgHeaderBadge.classList.remove('hidden');
+        } else if (chat.type === 'saved') {
+          els.tgHeaderBadge.textContent = 'Kişisel';
+          els.tgHeaderBadge.classList.remove('hidden');
+        } else if (chat.handle) {
+          els.tgHeaderBadge.textContent = chat.handle;
+          els.tgHeaderBadge.classList.remove('hidden');
+        } else {
+          els.tgHeaderBadge.classList.add('hidden');
+        }
+
+        const allMsgs = state.tgMessagesByChat[chat.id] || [];
+        const pinnedMsg = chat.pinnedId ? allMsgs.find(m => m.id === chat.pinnedId) : null;
+        if (pinnedMsg) {
+          els.tgPinnedText.textContent = pinnedMsg.text || (pinnedMsg.voiceNote ? '🎤 Sesli mesaj' : (pinnedMsg.attachment ? `📎 ${pinnedMsg.attachment.name}` : ''));
+          els.tgPinnedBar.classList.remove('hidden');
+        } else {
+          els.tgPinnedBar.classList.add('hidden');
+        }
+
+        const q = state.tgInChatSearchOpen ? state.tgInChatSearchQuery.trim().toLowerCase() : '';
+        const visibleMsgs = q
+          ? allMsgs.filter(m => (m.text || '').toLowerCase().includes(q) || (m.author || '').toLowerCase().includes(q))
+          : allMsgs;
+
+        if (state.tgInChatSearchOpen) {
+          els.tgSearchCount.textContent = q ? `${visibleMsgs.length} sonuç` : '';
+        }
+
+        els.tgMessagesArea.innerHTML = '';
+
+        const datePill = document.createElement('div');
+        datePill.className = 'flex justify-center my-2';
+        datePill.innerHTML = '<span class="px-3 py-1 rounded-full text-[11px] font-medium bg-surface-900/80 text-slate-300 border border-slate-800/80">Bugün</span>';
+        els.tgMessagesArea.appendChild(datePill);
+
+        if (visibleMsgs.length === 0) {
+          const empty = document.createElement('div');
+          empty.className = 'max-w-sm mx-auto my-8 rounded-2xl bg-surface-900/85 border border-slate-800/80 p-5 text-center space-y-3';
+          if (q) {
+            empty.innerHTML = '<div class="text-sm text-slate-300">Aramana uygun mesaj bulunamadı.</div>';
+          } else if (chat.type === 'dm') {
+            const isOnline = !!state.onlineDirectory[chat.handle] || (state.remotePeer && state.remotePeer.handle === chat.handle);
+            empty.innerHTML = `
+              <div class="w-12 h-12 rounded-full mx-auto flex items-center justify-center text-base font-bold text-white" style="background-color: ${chat.color};">${escapeHtml(getInitials(chat.name))}</div>
+              <div>
+                <div class="text-sm font-bold text-white">${escapeHtml(chat.name)}</div>
+                <div class="text-xs font-mono text-sky-400">${escapeHtml(chat.handle)}</div>
+              </div>
+              <p class="text-xs text-slate-400 leading-relaxed">
+                ${isOnline
+                  ? 'Kullanıcı çevrimiçi! Aşağıdan hemen mesaj gönderebilir veya sağ üstten sesli arayabilirsin.'
+                  : 'Mesaj yazabilir veya farklı cihazdaysa aşağıdaki butonla P2P bağlantısı kurabilirsin.'}
+              </p>
+              ${!isOnline && !state.serverConnected ? '<button data-open-p2p-inline="1" type="button" class="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition">P2P Kodu ile Bağlan</button>' : ''}
+            `;
+          } else {
+            empty.innerHTML = `
+              <div class="text-sm font-semibold text-white">${escapeHtml(chat.name)}</div>
+              <p class="text-xs text-slate-400 leading-relaxed">Henüz mesaj yok. Aşağıdan mesaj, fotoğraf, dosya veya sesli mesaj gönderebilir ya da sol menüden <strong>Kullanıcı Adı ile Arkadaş Bul</strong> diyerek arkadaşlarına ulaşabilirsin.</p>
+              <button data-open-find-inline="1" type="button" class="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold transition">
+                <i data-lucide="at-sign" class="w-3.5 h-3.5"></i>
+                Kullanıcı Adı ile Arkadaş Bul
+              </button>
+            `;
+          }
+          els.tgMessagesArea.appendChild(empty);
+          const p2pInline = empty.querySelector('[data-open-p2p-inline]');
+          if (p2pInline) p2pInline.addEventListener('click', () => openModal('modal-connect'));
+          const findInline = empty.querySelector('[data-open-find-inline]');
+          if (findInline) findInline.addEventListener('click', () => { renderOnlineDirectory(); openModal('modal-find-user'); });
+          lucide.createIcons();
+          return;
+        }
+
+        visibleMsgs.forEach(msg => {
+          const row = document.createElement('div');
+          row.dataset.tgMsgId = msg.id;
+          row.className = `group flex items-end gap-2 ${msg.outgoing ? 'justify-end' : 'justify-start'}`;
+
+          const avatarHtml = !msg.outgoing
+            ? `<div class="w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-bold text-white shrink-0 mb-1" style="background-color: ${msg.color || '#6366f1'};">${escapeHtml(getInitials(msg.author))}</div>`
+            : '';
+
+          let replyHtml = '';
+          if (msg.replyTo) {
+            replyHtml = `
+              <div data-jump-msg="${escapeHtml(msg.replyTo.id)}" class="cursor-pointer mb-1.5 pl-2.5 py-1 pr-2 rounded-lg bg-black/20 border-l-2 border-sky-400 text-xs">
+                <div class="font-semibold text-sky-300 truncate">${escapeHtml(msg.replyTo.author)}</div>
+                <div class="text-slate-300/90 truncate">${escapeHtml(msg.replyTo.preview)}</div>
+              </div>
+            `;
+          }
+
+          let attachHtml = '';
+          if (msg.attachment) {
+            if (msg.attachment.isImage && msg.attachment.dataUrl) {
+              attachHtml = `
+                <div class="mb-1.5 overflow-hidden rounded-xl border border-white/10">
+                  <img data-lightbox-src="${msg.attachment.dataUrl}" src="${msg.attachment.dataUrl}" alt="${escapeHtml(msg.attachment.name)}" class="max-w-full max-h-60 w-auto object-cover cursor-pointer hover:opacity-95 transition" />
+                </div>
+              `;
+            } else {
+              attachHtml = `
+                <div class="mb-1.5 flex items-center gap-2.5 p-2.5 rounded-xl bg-black/20 border border-white/10">
+                  <div class="w-9 h-9 rounded-lg bg-sky-500/20 text-sky-300 flex items-center justify-center shrink-0">
+                    <i data-lucide="file-text" class="w-4 h-4"></i>
+                  </div>
+                  <div class="min-w-0 flex-1">
+                    <div class="text-xs font-semibold text-white truncate">${escapeHtml(msg.attachment.name)}</div>
+                    <div class="text-[10px] text-slate-400">${formatFileSize(msg.attachment.size)}</div>
+                  </div>
+                  ${msg.attachment.dataUrl ? `<a href="${msg.attachment.dataUrl}" download="${escapeHtml(msg.attachment.name)}" class="p-1.5 rounded-lg bg-sky-500/20 hover:bg-sky-500/35 text-sky-200 transition" title="İndir"><i data-lucide="download" class="w-3.5 h-3.5"></i></a>` : ''}
+                </div>
+              `;
+            }
+          }
+
+          let voiceNoteHtml = '';
+          if (msg.voiceNote) {
+            const bars = [12, 22, 16, 28, 19, 32, 24, 14, 26, 30, 18, 22, 15, 25, 20, 12];
+            const barsHtml = bars.map(bh => `<span class="w-1 rounded-full bg-sky-300/75" style="height:${bh}px"></span>`).join('');
+            voiceNoteHtml = `
+              <div class="flex items-center gap-3 py-1 min-w-[200px]">
+                <button data-play-voice="${escapeHtml(msg.id)}" type="button" class="w-9 h-9 rounded-full bg-sky-500 hover:bg-sky-400 text-white flex items-center justify-center shrink-0 transition">
+                  <i data-lucide="play" class="w-4 h-4"></i>
+                </button>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center gap-1 h-8">${barsHtml}</div>
+                  <div class="text-[10px] text-sky-200/80 mt-0.5 flex items-center justify-between">
+                    <span>Sesli mesaj</span>
+                    <span class="font-mono">${formatDuration(msg.voiceNote.duration || 1)}</span>
+                  </div>
+                </div>
+              </div>
+            `;
+          }
+
+          const reactEntries = Object.entries(msg.reactions || {}).filter(([, count]) => count > 0);
+          const reactionsHtml = reactEntries.length > 0
+            ? `<div class="flex flex-wrap gap-1 mt-1.5">${reactEntries.map(([em, cnt]) => `
+                <button data-toggle-react="${escapeHtml(msg.id)}" data-emoji="${em}" type="button" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-black/25 hover:bg-black/40 border border-white/10 text-white transition">
+                  <span>${em}</span><span class="text-[10px] font-semibold text-sky-300">${cnt}</span>
+                </button>
+              `).join('')}</div>`
+            : '';
+
+          const actionsHtml = `
+            <div class="opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition flex items-center gap-0.5 bg-surface-900/95 border border-slate-700/70 rounded-lg p-0.5 shadow-lg self-center shrink-0">
+              <button data-act-reply="${escapeHtml(msg.id)}" type="button" class="p-1 rounded text-slate-400 hover:text-sky-300 hover:bg-surface-800" title="Yanıtla">
+                <i data-lucide="reply" class="w-3.5 h-3.5"></i>
+              </button>
+              <button data-act-react-quick="${escapeHtml(msg.id)}" type="button" class="p-1 rounded text-slate-400 hover:text-amber-300 hover:bg-surface-800" title="Tepki Ver">
+                <i data-lucide="smile-plus" class="w-3.5 h-3.5"></i>
+              </button>
+              <button data-act-pin="${escapeHtml(msg.id)}" type="button" class="p-1 rounded text-slate-400 hover:text-indigo-300 hover:bg-surface-800" title="Sabitle">
+                <i data-lucide="pin" class="w-3.5 h-3.5"></i>
+              </button>
+              ${msg.outgoing ? `
+                <button data-act-del="${escapeHtml(msg.id)}" type="button" class="p-1 rounded text-slate-400 hover:text-rose-400 hover:bg-surface-800" title="Sil">
+                  <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                </button>
+              ` : ''}
+            </div>
+          `;
+
+          const bubbleHtml = `
+            <div class="max-w-[82%] sm:max-w-[70%] px-3.5 py-2 shadow-md ${msg.outgoing ? 'tg-bubble-out text-white' : 'tg-bubble-in text-slate-100 border border-slate-800/80'}">
+              ${!msg.outgoing ? `<div class="text-xs font-semibold mb-0.5" style="color: ${msg.color || '#38bdf8'};">${escapeHtml(msg.author)}</div>` : ''}
+              ${replyHtml}
+              ${attachHtml}
+              ${voiceNoteHtml}
+              ${msg.text ? `<p class="text-sm leading-relaxed break-words whitespace-pre-wrap">${escapeHtml(msg.text)}</p>` : ''}
+              ${reactionsHtml}
+              <div class="mt-1 flex items-center justify-end gap-1 text-[10px] ${msg.outgoing ? 'text-sky-200/80' : 'text-slate-400'}">
+                <span>${escapeHtml(msg.time)}</span>
+                ${msg.outgoing ? '<i data-lucide="check-check" class="w-3.5 h-3.5 text-sky-300"></i>' : ''}
+              </div>
+            </div>
+          `;
+
+          row.innerHTML = msg.outgoing
+            ? `${actionsHtml}${bubbleHtml}`
+            : `${avatarHtml}${bubbleHtml}${actionsHtml}`;
+
+          els.tgMessagesArea.appendChild(row);
+        });
+
+        els.tgMessagesArea.querySelectorAll('[data-act-reply]').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const m = allMsgs.find(x => x.id === btn.dataset.actReply);
+            if (!m) return;
+            state.tgReplyTo = {
+              id: m.id,
+              author: m.author,
+              preview: m.text || (m.voiceNote ? '🎤 Sesli mesaj' : (m.attachment ? `📎 ${m.attachment.name}` : ''))
+            };
+            els.tgReplyAuthor.textContent = state.tgReplyTo.author;
+            els.tgReplyPreview.textContent = state.tgReplyTo.preview;
+            els.tgReplyBar.classList.remove('hidden');
+            els.tgComposerInput.focus();
+          });
+        });
+
+        els.tgMessagesArea.querySelectorAll('[data-act-react-quick]').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const msgId = btn.dataset.actReactQuick;
+            const randomOrNext = REACTION_EMOJIS[Math.floor(Math.random() * REACTION_EMOJIS.length)];
+            applyReactionToTgMessage(chat.id, msgId, randomOrNext, true);
+          });
+        });
+
+        els.tgMessagesArea.querySelectorAll('[data-toggle-react]').forEach(btn => {
+          btn.addEventListener('click', () => {
+            applyReactionToTgMessage(chat.id, btn.dataset.toggleReact, btn.dataset.emoji, true);
+          });
+        });
+
+        els.tgMessagesArea.querySelectorAll('[data-act-pin]').forEach(btn => {
+          btn.addEventListener('click', () => {
+            chat.pinnedId = btn.dataset.actPin;
+            renderTgActiveChat();
+            showToast('Mesaj sohbete sabitlendi.', 'info');
+          });
+        });
+
+        els.tgMessagesArea.querySelectorAll('[data-act-del]').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const id = btn.dataset.actDel;
+            state.tgMessagesByChat[chat.id] = (state.tgMessagesByChat[chat.id] || []).filter(m => m.id !== id);
+            if (chat.pinnedId === id) chat.pinnedId = null;
+            renderTgChatsList();
+            renderTgActiveChat();
+            showToast('Mesaj silindi.', 'info');
+          });
+        });
+
+        els.tgMessagesArea.querySelectorAll('[data-jump-msg]').forEach(el => {
+          el.addEventListener('click', () => {
+            const target = els.tgMessagesArea.querySelector(`[data-tg-msg-id="${el.dataset.jumpMsg}"]`);
+            if (target) {
+              target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              target.classList.add('msg-highlight');
+              setTimeout(() => target.classList.remove('msg-highlight'), 1300);
+            }
+          });
+        });
+
+        els.tgMessagesArea.querySelectorAll('[data-lightbox-src]').forEach(img => {
+          img.addEventListener('click', () => {
+            els.lightboxImg.src = img.dataset.lightboxSrc;
+            openModal('modal-lightbox');
+          });
+        });
+
+        els.tgMessagesArea.querySelectorAll('[data-play-voice]').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const m = allMsgs.find(x => x.id === btn.dataset.playVoice);
+            if (!m || !m.voiceNote) return;
+            playVoiceNoteMessage(m.voiceNote, btn);
+          });
+        });
+
+        lucide.createIcons();
+        els.tgMessagesArea.scrollTop = els.tgMessagesArea.scrollHeight;
+      }
+
+      function playVoiceNoteMessage(voiceNote, btn) {
+        if (currentPlayingAudio) {
+          currentPlayingAudio.pause();
+          currentPlayingAudio = null;
+          if (currentPlayingBtn) {
+            currentPlayingBtn.innerHTML = '<i data-lucide="play" class="w-4 h-4"></i>';
+            lucide.createIcons();
+          }
+          if (currentPlayingBtn === btn) {
+            currentPlayingBtn = null;
+            return;
+          }
+        }
+
+        if (voiceNote.audioUrl) {
+          const audio = new Audio(voiceNote.audioUrl);
+          audio.volume = state.deafened ? 0 : state.outputVol;
+          currentPlayingAudio = audio;
+          currentPlayingBtn = btn;
+          btn.innerHTML = '<i data-lucide="pause" class="w-4 h-4"></i>';
+          lucide.createIcons();
+          audio.onended = () => {
+            btn.innerHTML = '<i data-lucide="play" class="w-4 h-4"></i>';
+            lucide.createIcons();
+            currentPlayingAudio = null;
+            currentPlayingBtn = null;
+          };
+          audio.play().catch(() => {
+            showToast('Sesli mesaj oynatılamadı.', 'warn');
+          });
+        } else {
+          playTone([392, 493, 587, 523], 0.22, 0.08, 'triangle');
+          showToast('Simüle edilmiş sesli mesaj oynatılıyor...', 'info');
+        }
+      }
+
+      async function startVoiceNoteRecording() {
+        recSeconds = 0;
+        recChunks = [];
+        els.tgRecTimer.textContent = '0:00';
+        els.tgComposerForm.classList.add('hidden');
+        els.tgRecordingBar.classList.remove('hidden');
+
+        try {
+          if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia && typeof MediaRecorder !== 'undefined') {
+            recStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            mediaRecorder = new MediaRecorder(recStream);
+            mediaRecorder.ondataavailable = (e) => {
+              if (e.data && e.data.size > 0) recChunks.push(e.data);
+            };
+            mediaRecorder.start();
+          }
+        } catch (_) {
+          showToast('Mikrofona erişilemedi — test sesli mesajı kaydediliyor.', 'warn');
+        }
+
+        recTimerInterval = setInterval(() => {
+          recSeconds++;
+          els.tgRecTimer.textContent = formatDuration(recSeconds);
+        }, 1000);
+      }
+
+      function finishVoiceNoteRecording(send) {
+        if (recTimerInterval) { clearInterval(recTimerInterval); recTimerInterval = null; }
+        els.tgRecordingBar.classList.add('hidden');
+        els.tgComposerForm.classList.remove('hidden');
+
+        const duration = Math.max(1, recSeconds);
+
+        if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+          mediaRecorder.onstop = () => {
+            if (recStream) {
+              recStream.getTracks().forEach(t => t.stop());
+              recStream = null;
+            }
+            if (send && recChunks.length > 0) {
+              const blob = new Blob(recChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+              const audioUrl = URL.createObjectURL(blob);
+              sendTgMessage({ voiceNote: { audioUrl, duration } });
+            }
+            mediaRecorder = null;
+            recChunks = [];
+          };
+          mediaRecorder.stop();
+        } else {
+          if (recStream) {
+            recStream.getTracks().forEach(t => t.stop());
+            recStream = null;
+          }
+          if (send) {
+            sendTgMessage({ voiceNote: { audioUrl: null, duration, simulated: true } });
+          }
+        }
+      }
+
+      // --- Voice UI Rendering ---
+      function renderRooms() {
+        els.roomsList.innerHTML = '';
+        state.rooms.forEach((room) => {
+          const isActive = room.id === state.activeRoomId;
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = `w-full flex items-center justify-between gap-2.5 px-3 py-2.5 rounded-xl text-left transition ${
+            isActive
+              ? 'bg-indigo-600/20 text-white border border-indigo-500/35'
+              : 'text-slate-400 hover:bg-surface-800 hover:text-slate-200 border border-transparent'
+          }`;
+          btn.innerHTML = `
+            <div class="flex items-center gap-2.5 min-w-0">
+              <i data-lucide="${room.icon}" class="w-4 h-4 shrink-0 ${isActive ? 'text-indigo-400' : 'text-slate-500'}"></i>
+              <span class="text-sm font-medium truncate">${escapeHtml(room.name)}</span>
+            </div>
+            ${isActive && state.inVoice ? '<span class="w-2 h-2 rounded-full bg-emerald-400 shrink-0"></span>' : ''}
+          `;
+          btn.addEventListener('click', () => {
+            switchRoom(room.id);
+            if (state.viewMode !== 'voice') setViewMode('voice');
+          });
+          els.roomsList.appendChild(btn);
+        });
+        lucide.createIcons();
+      }
+
+      function switchRoom(roomId) {
+        if (roomId === state.activeRoomId) {
+          closeMobileDrawers();
+          return;
+        }
+        state.activeRoomId = roomId;
+        state.tabPeers = {};
+        if (!state.messagesByRoom[roomId]) {
+          state.messagesByRoom[roomId] = [];
+        }
+        playTone([520], 0.08, 0.05);
+        broadcastPresence();
+        updateAllUI();
+        closeMobileDrawers();
+      }
+
+      function getAllParticipants() {
+        const list = [
+          {
+            id: 'local',
+            name: state.userName,
+            handle: state.userHandle,
+            color: state.userColor,
+            isLocal: true,
+            inVoice: state.inVoice,
+            muted: isEffectivelyMuted(),
+            deafened: state.deafened,
+            speaking: state.localSpeaking,
+            tag: state.isSimulatedMic ? 'Test Modu' : state.userHandle
+          }
+        ];
+        if (state.remotePeer) {
+          list.push({
+            ...state.remotePeer,
+            isLocal: false,
+            inVoice: true,
+            tag: state.remotePeer.handle || 'WebRTC P2P'
+          });
+        }
+        Object.values(state.tabPeers).forEach(tp => {
+          list.push({
+            ...tp,
+            isLocal: false,
+            inVoice: true,
+            tag: tp.handle || 'Diğer Sekme'
+          });
+        });
+        return list;
+      }
+
+      function renderParticipants() {
+        const list = getAllParticipants();
+        els.participantCountPill.textContent = `${list.length} kişi`;
+        els.p2pStatusPill.textContent = state.remotePeer
+          ? `Bağlı: ${state.remotePeer.name}`
+          : (Object.keys(state.tabPeers).length > 0 ? 'Çoklu sekme aktif' : 'Tek başına');
+
+        els.participantsGrid.innerHTML = '';
+        list.forEach((p) => {
+          const card = document.createElement('div');
+          card.dataset.participantId = p.id;
+          card.className = `relative rounded-2xl bg-surface-900 border border-slate-800/80 p-5 flex flex-col items-center justify-center gap-3 transition-all duration-200 ${
+            p.speaking ? 'speaking-card' : ''
+          }`;
+          card.innerHTML = `
+            <span class="absolute top-3 right-3 px-2 py-0.5 rounded-full text-[10px] font-semibold tracking-wide ${
+              p.isLocal ? 'bg-indigo-500/15 text-indigo-300' : 'bg-emerald-500/15 text-emerald-300'
+            }">${escapeHtml(p.tag)}</span>
+
+            <div data-avatar-ring="${p.id}" class="w-16 h-16 rounded-full flex items-center justify-center text-xl font-bold text-white border-2 border-transparent transition-all ${
+              p.speaking ? 'speaking-ring' : ''
+            }" style="background-color: ${p.color};">
+              ${escapeHtml(getInitials(p.name))}
+            </div>
+
+            <div class="text-center min-w-0 w-full">
+              <div class="text-sm font-semibold text-white truncate">${escapeHtml(p.name)}</div>
+              <div class="mt-1 flex items-center justify-center gap-1.5 text-xs ${
+                !p.inVoice ? 'text-slate-500' : (p.muted ? 'text-rose-400' : (p.speaking ? 'text-emerald-400' : 'text-slate-400'))
+              }">
+                <i data-lucide="${!p.inVoice ? 'mic-off' : (p.muted ? 'mic-off' : 'mic')}" class="w-3.5 h-3.5"></i>
+                <span>${!p.inVoice ? 'Sese katılmadı' : (p.deafened ? 'Sağırlaştırıldı' : (p.muted ? 'Susturuldu' : (p.speaking ? 'Konuşuyor...' : 'Dinlemede')))}</span>
+              </div>
+            </div>
+          `;
+          els.participantsGrid.appendChild(card);
+        });
+        lucide.createIcons();
+      }
+
+      function updateSpeakingRings() {
+        const list = getAllParticipants();
+        list.forEach(p => {
+          const card = els.participantsGrid.querySelector(`[data-participant-id="${p.id}"]`);
+          const ring = els.participantsGrid.querySelector(`[data-avatar-ring="${p.id}"]`);
+          if (card) card.classList.toggle('speaking-card', !!p.speaking);
+          if (ring) ring.classList.toggle('speaking-ring', !!p.speaking);
+        });
+      }
+
+      function spawnReactionOnCard(participantId, emoji) {
+        const card = els.participantsGrid.querySelector(`[data-participant-id="${participantId}"]`) || els.participantsGrid.firstElementChild;
+        if (!card) return;
+        const span = document.createElement('span');
+        span.className = 'reaction-float';
+        span.textContent = emoji;
+        card.appendChild(span);
+        setTimeout(() => span.remove(), 1350);
+      }
+
+      function addRoomMessage(roomId, msg) {
+        if (!state.messagesByRoom[roomId]) state.messagesByRoom[roomId] = [];
+        state.messagesByRoom[roomId].push({ id: 'm-' + Date.now() + Math.random(), ...msg });
+        if (roomId === state.activeRoomId) {
+          renderChat();
+          if (!state.chatOpenMobile && window.innerWidth < 1280) {
+            els.chatUnreadBadge.classList.remove('hidden');
+          }
+        }
+      }
+
+      function renderChat() {
+        const msgs = state.messagesByRoom[state.activeRoomId] || [];
+        els.chatMessages.innerHTML = '';
+        if (msgs.length === 0) {
+          els.chatMessages.innerHTML = '<div class="text-xs text-slate-500 text-center py-8">Oda içi sohbet boş. Bir mesaj yazabilirsin.</div>';
+          return;
+        }
+        msgs.forEach(m => {
+          const wrap = document.createElement('div');
+          if (m.system) {
+            wrap.className = 'text-[11px] text-slate-400 bg-surface-850/80 border border-slate-800/80 rounded-xl px-3 py-2 leading-relaxed';
+            wrap.innerHTML = `${escapeHtml(m.text)} <span class="text-slate-500 ml-1">${escapeHtml(m.time)}</span>`;
+          } else {
+            wrap.className = 'flex items-start gap-2.5';
+            wrap.innerHTML = `
+              <div class="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold text-white shrink-0 mt-0.5" style="background-color: ${m.color || '#6366f1'};">
+                ${escapeHtml(getInitials(m.author))}
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="flex items-baseline gap-2">
+                  <span class="text-xs font-semibold text-slate-200 truncate">${escapeHtml(m.author)}</span>
+                  <span class="text-[10px] text-slate-500">${escapeHtml(m.time)}</span>
+                </div>
+                <p class="text-sm text-slate-300 break-words leading-snug mt-0.5">${escapeHtml(m.text)}</p>
+              </div>
+            `;
+          }
+          els.chatMessages.appendChild(wrap);
+        });
+        els.chatMessages.scrollTop = els.chatMessages.scrollHeight;
+      }
+
+      function updateControlsUI() {
+        const room = state.rooms.find(r => r.id === state.activeRoomId) || state.rooms[0];
+        els.activeRoomTitle.textContent = room.name;
+        els.activeRoomDesc.textContent = room.desc;
+        els.activeRoomIcon.setAttribute('data-lucide', room.icon);
+
+        els.userAvatarBadge.textContent = getInitials(state.userName);
+        els.userAvatarBadge.style.backgroundColor = state.userColor;
+        els.userNameDisplay.textContent = state.userName;
+        els.userHandleDisplay.textContent = state.userHandle;
+
+        els.tgVoiceMinibar.classList.toggle('hidden', !(state.inVoice && state.viewMode === 'chat'));
+        if (state.inVoice) {
+          els.tgVoiceMinibarText.textContent = `Sesli oda aktif: ${room.name}${state.remotePeer ? ' • ' + state.remotePeer.name : ''}`;
+        }
+
+        if (state.inVoice) {
+          els.statusDot.className = 'w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0';
+          els.statusLabel.textContent = state.remotePeer ? 'Sesli Bağlı' : 'Ses Aktif';
+          els.statusSublabel.textContent = `${room.name} • ${state.isSimulatedMic ? 'Sanal Mikrofon' : 'Gerçek Mikrofon'}`;
+          els.audioSourceBadge.textContent = state.isSimulatedMic ? 'Test Sinyali' : 'Canlı Mikrofon';
+          els.audioSourceBadge.className = 'px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-500/15 text-emerald-400';
+
+          els.btnJoinLeave.className = 'w-full py-2.5 px-4 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 bg-rose-600 hover:bg-rose-500 text-white shadow-lg shadow-rose-600/20 transition';
+          els.btnJoinLeave.innerHTML = '<i data-lucide="phone-off" class="w-4 h-4"></i><span>Odadan Ayrıl</span>';
+          els.btnDisconnect.classList.remove('hidden');
+          els.btnDisconnect.classList.add('flex');
+        } else {
+          els.statusDot.className = 'w-2 h-2 rounded-full bg-slate-500 shrink-0';
+          els.statusLabel.textContent = state.serverConnected ? 'Sunucuya Bağlı' : 'Bağlı Değil';
+          els.statusSublabel.textContent = state.serverConnected ? `${state.userHandle} çevrimiçi` : 'Katılmak için mikrofonu açın';
+          els.audioSourceBadge.textContent = 'Beklemede';
+          els.audioSourceBadge.className = 'px-2 py-0.5 rounded-full text-[11px] font-medium bg-surface-800 text-slate-400';
+
+          els.btnJoinLeave.className = 'w-full py-2.5 px-4 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/20 transition';
+          els.btnJoinLeave.innerHTML = '<i data-lucide="phone-call" class="w-4 h-4"></i><span>Sesli Odaya Katıl</span>';
+          els.btnDisconnect.classList.add('hidden');
+          els.btnDisconnect.classList.remove('flex');
+        }
+
+        const muted = state.micMuted || state.deafened;
+        els.btnMic.className = `flex items-center gap-2 px-4 py-2.5 rounded-xl font-medium text-sm border transition ${
+          muted
+            ? 'bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border-rose-500/40'
+            : 'bg-surface-800 hover:bg-surface-700 text-white border-slate-700/70'
+        }`;
+        els.iconMic.setAttribute('data-lucide', muted ? 'mic-off' : 'mic');
+        els.labelMic.textContent = muted ? 'Susturuldu' : 'Mikrofon';
+        els.btnSidebarMute.innerHTML = `<i data-lucide="${muted ? 'mic-off' : 'mic'}" class="w-4 h-4 ${muted ? 'text-rose-400' : ''}"></i>`;
+
+        els.btnDeafen.className = `flex items-center gap-2 px-4 py-2.5 rounded-xl font-medium text-sm border transition ${
+          state.deafened
+            ? 'bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border-rose-500/40'
+            : 'bg-surface-800 hover:bg-surface-700 text-white border-slate-700/70'
+        }`;
+        els.iconDeafen.setAttribute('data-lucide', state.deafened ? 'volume-x' : 'headphones');
+        els.labelDeafen.textContent = state.deafened ? 'Ses Kapalı' : 'Kulaklık';
+
+        els.btnLoopback.className = `inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition ${
+          state.loopback
+            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+            : 'bg-surface-800 text-slate-300 hover:bg-surface-700 hover:text-white border-slate-700/60'
+        }`;
+
+        els.btnPttToggle.className = `inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition ${
+          state.pttEnabled
+            ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40'
+            : 'bg-surface-800 text-slate-300 hover:bg-surface-700 hover:text-white border-slate-700/60'
+        }`;
+        els.pttBanner.classList.toggle('hidden', !state.pttEnabled);
+
+        lucide.createIcons();
+      }
+
+      function updateAllUI() {
+        renderRooms();
+        renderParticipants();
+        renderChat();
+        renderTgChatsList();
+        renderTgActiveChat();
+        updateControlsUI();
+      }
+
+      // --- Modals & Drawers ---
+      function openModal(id) {
+        const m = document.getElementById(id);
+        if (m) m.classList.remove('hidden');
+      }
+
+      function closeModal(id) {
+        const m = document.getElementById(id);
+        if (m) m.classList.add('hidden');
+      }
+
+      function closeMobileDrawers() {
+        els.leftSidebar.classList.add('-translate-x-full');
+        els.rightChat.classList.add('translate-x-full');
+        els.mobileBackdrop.classList.add('hidden');
+        state.chatOpenMobile = false;
+      }
+
+      function renderColorPicker() {
+        els.colorPicker.innerHTML = '';
+        AVATAR_COLORS.forEach(c => {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className = `w-8 h-8 rounded-full border-2 transition ${state.selectedColor === c ? 'border-white scale-110' : 'border-transparent opacity-75 hover:opacity-100'}`;
+          b.style.backgroundColor = c;
+          b.addEventListener('click', () => {
+            state.selectedColor = c;
+            renderColorPicker();
+          });
+          els.colorPicker.appendChild(b);
+        });
+      }
+
+      function renderEmojiGrid() {
+        els.tgEmojiGrid.innerHTML = '';
+        QUICK_EMOJIS.forEach(em => {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'p-1.5 rounded-lg hover:bg-surface-800 text-lg transition';
+          b.textContent = em;
+          b.addEventListener('click', () => {
+            els.tgComposerInput.value += em;
+            els.tgComposerInput.focus();
+            els.tgEmojiPopover.classList.add('hidden');
+          });
+          els.tgEmojiGrid.appendChild(b);
+        });
+      }
+
+      // --- Event Listeners ---
+      els.btnModeVoice.addEventListener('click', () => setViewMode('voice'));
+      els.btnModeChat.addEventListener('click', () => setViewMode('chat'));
+      els.sidebarTabVoice.addEventListener('click', () => setSidebarTab('voice'));
+      els.sidebarTabTg.addEventListener('click', () => setSidebarTab('tg'));
+      document.getElementById('btn-expand-to-tg').addEventListener('click', () => setViewMode('chat'));
+
+      document.getElementById('btn-copy-my-handle').addEventListener('click', () => {
+        copyText(state.userHandle, `Kullanıcı adın kopyalandı: ${state.userHandle}`);
+      });
+
+      document.getElementById('btn-find-user').addEventListener('click', () => {
+        els.inputFindHandle.value = '';
+        renderOnlineDirectory();
+        openModal('modal-find-user');
+        setTimeout(() => els.inputFindHandle.focus(), 50);
+      });
+
+      els.formFindUser.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const raw = els.inputFindHandle.value.trim();
+        if (!raw) return;
+        const norm = normalizeHandle(raw);
+        if (norm === state.userHandle) {
+          showToast('Kendi kullanıcı adına mesaj göndermek için Kayıtlı Mesajlar sohbetini kullanabilirsin.', 'info');
+          state.activeTgChatId = 'saved';
+          closeModal('modal-find-user');
+          setViewMode('chat');
+          return;
+        }
+        const entry = state.onlineDirectory[norm];
+        openOrCreateDirectChat(norm, entry ? entry.name : norm, entry ? entry.color : null, true);
+        closeModal('modal-find-user');
+        closeMobileDrawers();
+        showToast(`${norm} ile sohbet açıldı.`, 'success');
+      });
+
+      document.getElementById('btn-minibar-return').addEventListener('click', () => setViewMode('voice'));
+      document.getElementById('btn-minibar-mute').addEventListener('click', toggleMute);
+      document.getElementById('btn-minibar-leave').addEventListener('click', leaveVoiceRoom);
+
+      els.tgChatSearch.addEventListener('input', (e) => {
+        state.tgChatSearchQuery = e.target.value;
+        renderTgChatsList();
+      });
+
+      document.getElementById('btn-new-tg-chat').addEventListener('click', () => {
+        els.inputTgChatName.value = '';
+        openModal('modal-new-chat');
+      });
+
+      els.formNewChat.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const name = els.inputTgChatName.value.trim();
+        const type = els.selectTgChatType.value;
+        if (!name) return;
+        const id = 'tg-chat-' + Date.now();
+        const color = AVATAR_COLORS[state.tgChats.length % AVATAR_COLORS.length];
+        state.tgChats.unshift({
+          id,
+          name,
+          handle: type === 'dm' ? normalizeHandle(name) : '',
+          type,
+          color,
+          status: type === 'group' ? 'Yeni grup sohbeti' : 'bağlantı bekliyor',
+          pinnedId: null,
+          unread: 0
+        });
+        state.tgMessagesByChat[id] = [];
+        state.activeTgChatId = id;
+        closeModal('modal-new-chat');
+        setViewMode('chat');
+        showToast(`"${name}" oluşturuldu.`, 'success');
+      });
+
+      document.getElementById('btn-tg-start-call').addEventListener('click', async () => {
+        const activeChat = state.tgChats.find(c => c.id === state.activeTgChatId);
+        setViewMode('voice');
+        if (activeChat && activeChat.type === 'dm' && activeChat.handle && state.serverConnected) {
+          await startServerVoiceCall(activeChat.handle);
+        } else if (!state.inVoice) {
+          await joinVoiceRoom(false);
+        }
+      });
+
+      document.getElementById('btn-tg-search-toggle').addEventListener('click', () => {
+        state.tgInChatSearchOpen = !state.tgInChatSearchOpen;
+        els.tgInChatSearchBar.classList.toggle('hidden', !state.tgInChatSearchOpen);
+        if (state.tgInChatSearchOpen) {
+          els.tgMsgSearchInput.focus();
+        } else {
+          state.tgInChatSearchQuery = '';
+          els.tgMsgSearchInput.value = '';
+          renderTgActiveChat();
+        }
+      });
+
+      document.getElementById('btn-tg-search-close').addEventListener('click', () => {
+        state.tgInChatSearchOpen = false;
+        state.tgInChatSearchQuery = '';
+        els.tgMsgSearchInput.value = '';
+        els.tgInChatSearchBar.classList.add('hidden');
+        renderTgActiveChat();
+      });
+
+      els.tgMsgSearchInput.addEventListener('input', (e) => {
+        state.tgInChatSearchQuery = e.target.value;
+        renderTgActiveChat();
+      });
+
+      els.tgPinnedBar.addEventListener('click', (e) => {
+        if (e.target.closest('#btn-tg-unpin')) return;
+        const chat = state.tgChats.find(c => c.id === state.activeTgChatId);
+        if (!chat || !chat.pinnedId) return;
+        const target = els.tgMessagesArea.querySelector(`[data-tg-msg-id="${chat.pinnedId}"]`);
+        if (target) {
+          target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          target.classList.add('msg-highlight');
+          setTimeout(() => target.classList.remove('msg-highlight'), 1300);
+        }
+      });
+
+      document.getElementById('btn-tg-unpin').addEventListener('click', () => {
+        const chat = state.tgChats.find(c => c.id === state.activeTgChatId);
+        if (chat) {
+          chat.pinnedId = null;
+          renderTgActiveChat();
+        }
+      });
+
+      document.getElementById('btn-tg-cancel-reply').addEventListener('click', () => {
+        state.tgReplyTo = null;
+        els.tgReplyBar.classList.add('hidden');
+      });
+
+      document.getElementById('btn-tg-emoji').addEventListener('click', () => {
+        els.tgEmojiPopover.classList.toggle('hidden');
+      });
+
+      document.getElementById('btn-tg-attach').addEventListener('click', () => {
+        els.tgFileInput.click();
+      });
+
+      els.tgFileInput.addEventListener('change', (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+        const isImage = file.type.startsWith('image/');
+        const reader = new FileReader();
+        reader.onload = () => {
+          sendTgMessage({
+            attachment: {
+              name: file.name,
+              size: file.size,
+              isImage,
+              dataUrl: reader.result
+            }
+          });
+          showToast(isImage ? 'Fotoğraf gönderildi.' : 'Dosya gönderildi.', 'success');
+        };
+        reader.readAsDataURL(file);
+        els.tgFileInput.value = '';
+      });
+
+      els.tgComposerInput.addEventListener('input', () => {
+        const now = Date.now();
+        if (now - lastTypingSent > 1500) {
+          lastTypingSent = now;
+          const chatObj = state.tgChats.find(c => c.id === state.activeTgChatId);
+          const isDm = !!(chatObj && chatObj.type === 'dm' && chatObj.handle);
+          const payload = {
+            type: 'tg_typing',
+            senderId: state.userId,
+            name: state.userName,
+            fromName: state.userName,
+            fromHandle: state.userHandle,
+            isDm,
+            toHandle: isDm ? chatObj.handle : null,
+            chatId: state.activeTgChatId
+          };
+          if (socket && state.serverConnected) socket.emit('typing', payload);
+          sendPeerSignal(payload);
+          if (broadcastChannel) {
+            try { broadcastChannel.postMessage(payload); } catch (_) {}
+          }
+        }
+      });
+
+      els.tgComposerForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const text = els.tgComposerInput.value.trim();
+        if (!text) return;
+        els.tgComposerInput.value = '';
+        els.tgEmojiPopover.classList.add('hidden');
+        sendTgMessage({ text });
+      });
+
+      document.getElementById('btn-tg-voice-note').addEventListener('click', startVoiceNoteRecording);
+      document.getElementById('btn-tg-rec-cancel').addEventListener('click', () => finishVoiceNoteRecording(false));
+      document.getElementById('btn-tg-rec-send').addEventListener('click', () => finishVoiceNoteRecording(true));
+
+      // Voice controls
+      els.btnJoinLeave.addEventListener('click', () => {
+        if (state.inVoice) leaveVoiceRoom();
+        else joinVoiceRoom(false);
+      });
+
+      els.btnDisconnect.addEventListener('click', leaveVoiceRoom);
+
+      els.btnSimVoice.addEventListener('click', () => {
+        if (state.inVoice && state.isSimulatedMic) {
+          leaveVoiceRoom();
+        } else {
+          joinVoiceRoom(true);
+        }
+      });
+
+      function toggleMute() {
+        state.micMuted = !state.micMuted;
+        if (!state.micMuted && state.deafened) state.deafened = false;
+        applyAudioGainState();
+        playTone([state.micMuted ? 280 : 480], 0.08, 0.06);
+        sendPeerSignal({ type: 'mute', muted: isEffectivelyMuted() });
+        broadcastPresence();
+        updateAllUI();
+      }
+
+      function toggleDeafen() {
+        state.deafened = !state.deafened;
+        applyAudioGainState();
+        playTone([state.deafened ? 220 : 540], 0.09, 0.06);
+        sendPeerSignal({ type: 'mute', muted: isEffectivelyMuted() });
+        broadcastPresence();
+        updateAllUI();
+      }
+
+      els.btnMic.addEventListener('click', toggleMute);
+      els.btnSidebarMute.addEventListener('click', toggleMute);
+      els.btnDeafen.addEventListener('click', toggleDeafen);
+
+      els.btnLoopback.addEventListener('click', async () => {
+        if (!state.inVoice) {
+          await joinVoiceRoom(false);
+        }
+        state.loopback = !state.loopback;
+        applyAudioGainState();
+        updateControlsUI();
+        showToast(state.loopback ? 'Ses testi açık: Kendi sesini duyabilirsin.' : 'Ses testi kapatıldı.', 'info');
+      });
+
+      els.btnPttToggle.addEventListener('click', () => {
+        state.pttEnabled = !state.pttEnabled;
+        state.pttActive = false;
+        applyAudioGainState();
+        updateAllUI();
+        showToast(state.pttEnabled ? 'Bas-Konuş açıldı (Space tuşuna basılı tut).' : 'Serbest konuşma moduna geçildi.', 'info');
+      });
+
+      const startPtt = () => {
+        if (!state.pttEnabled) return;
+        state.pttActive = true;
+        applyAudioGainState();
+        els.btnPttHold.classList.add('bg-emerald-600');
+        renderParticipants();
+      };
+      const endPtt = () => {
+        if (!state.pttEnabled) return;
+        state.pttActive = false;
+        applyAudioGainState();
+        els.btnPttHold.classList.remove('bg-emerald-600');
+        renderParticipants();
+      };
+      els.btnPttHold.addEventListener('mousedown', startPtt);
+      els.btnPttHold.addEventListener('mouseup', endPtt);
+      els.btnPttHold.addEventListener('mouseleave', endPtt);
+      els.btnPttHold.addEventListener('touchstart', (e) => { e.preventDefault(); startPtt(); });
+      els.btnPttHold.addEventListener('touchend', endPtt);
+
+      window.addEventListener('keydown', (e) => {
+        const tag = (e.target && e.target.tagName) || '';
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+        if (e.code === 'KeyM') {
+          toggleMute();
+        } else if (e.code === 'KeyD') {
+          toggleDeafen();
+        } else if (e.code === 'Space' && state.pttEnabled && !e.repeat) {
+          e.preventDefault();
+          startPtt();
+        }
+      });
+
+      window.addEventListener('keyup', (e) => {
+        if (e.code === 'Space' && state.pttEnabled) {
+          endPtt();
+        }
+      });
+
+      document.querySelectorAll('.reaction-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const emoji = btn.dataset.reaction;
+          spawnReactionOnCard('local', emoji);
+          playTone([660, 880], 0.08, 0.05);
+          sendPeerSignal({ type: 'reaction', emoji });
+          if (broadcastChannel) {
+            try {
+              broadcastChannel.postMessage({ type: 'reaction', senderId: state.userId, roomId: state.activeRoomId, emoji });
+            } catch (_) {}
+          }
+        });
+      });
+
+      document.getElementById('btn-sound-chime').addEventListener('click', () => {
+        playTone([587, 784, 1046], 0.16, 0.09, 'triangle');
+        showToast('Odaya bildirim zili çalındı.', 'info');
+      });
+
+      els.chatForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const text = els.chatInput.value.trim();
+        if (!text) return;
+        els.chatInput.value = '';
+        addRoomMessage(state.activeRoomId, {
+          author: state.userName,
+          color: state.userColor,
+          text,
+          time: nowTime()
+        });
+        sendPeerSignal({ type: 'chat', name: state.userName, color: state.userColor, text });
+        if (broadcastChannel) {
+          try {
+            broadcastChannel.postMessage({
+              type: 'chat',
+              senderId: state.userId,
+              roomId: state.activeRoomId,
+              name: state.userName,
+              color: state.userColor,
+              text
+            });
+          } catch (_) {}
+        }
+      });
+
+      // Connect Modal
+      document.getElementById('btn-open-connect').addEventListener('click', () => openModal('modal-connect'));
+      document.getElementById('btn-dock-connect').addEventListener('click', () => openModal('modal-connect'));
+
+      els.tabHost.addEventListener('click', () => {
+        els.panelHost.classList.remove('hidden');
+        els.panelJoin.classList.add('hidden');
+        els.tabHost.className = 'pb-2.5 px-2 text-sm font-semibold border-b-2 border-indigo-500 text-indigo-400 transition';
+        els.tabJoin.className = 'pb-2.5 px-2 text-sm font-semibold border-b-2 border-transparent text-slate-400 hover:text-slate-200 transition';
+      });
+      els.tabJoin.addEventListener('click', () => {
+        els.panelJoin.classList.remove('hidden');
+        els.panelHost.classList.add('hidden');
+        els.tabJoin.className = 'pb-2.5 px-2 text-sm font-semibold border-b-2 border-indigo-500 text-indigo-400 transition';
+        els.tabHost.className = 'pb-2.5 px-2 text-sm font-semibold border-b-2 border-transparent text-slate-400 hover:text-slate-200 transition';
+      });
+
+      document.getElementById('btn-create-offer').addEventListener('click', handleCreateOffer);
+      document.getElementById('btn-copy-offer').addEventListener('click', () => copyText(els.hostOfferCode.value, 'Davet kodu kopyalandı!'));
+      document.getElementById('btn-accept-answer').addEventListener('click', handleAcceptAnswer);
+      document.getElementById('btn-create-answer').addEventListener('click', handleCreateAnswer);
+      document.getElementById('btn-copy-answer').addEventListener('click', () => copyText(els.guestAnswerCode.value, 'Yanıt kodu kopyalandı!'));
+
+      // Settings Modal
+      document.getElementById('btn-open-settings').addEventListener('click', () => {
+        populateAudioDevices();
+        openModal('modal-settings');
+      });
+
+      els.selectMic.addEventListener('change', (e) => {
+        state.selectedDeviceId = e.target.value;
+        if (state.inVoice && !state.isSimulatedMic) joinVoiceRoom(false);
+      });
+
+      els.sliderMicGain.addEventListener('input', (e) => {
+        const v = Number(e.target.value);
+        state.micGain = v / 100;
+        els.valMicGain.textContent = v + '%';
+        applyAudioGainState();
+      });
+
+      els.sliderOutputVol.addEventListener('input', (e) => {
+        const v = Number(e.target.value);
+        state.outputVol = v / 100;
+        els.valOutputVol.textContent = v + '%';
+        applyAudioGainState();
+      });
+
+      els.chkEcho.addEventListener('change', (e) => {
+        state.echoCancellation = e.target.checked;
+        if (state.inVoice && !state.isSimulatedMic) joinVoiceRoom(false);
+      });
+
+      els.chkNoise.addEventListener('change', (e) => {
+        state.noiseSuppression = e.target.checked;
+        if (state.inVoice && !state.isSimulatedMic) joinVoiceRoom(false);
+      });
+
+      els.chkSfx.addEventListener('change', (e) => {
+        state.sfxEnabled = e.target.checked;
+      });
+
+      // New Room Modal
+      document.getElementById('btn-new-room').addEventListener('click', () => {
+        els.inputRoomName.value = '';
+        els.inputRoomDesc.value = '';
+        openModal('modal-room');
+      });
+
+      els.formNewRoom.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const name = els.inputRoomName.value.trim();
+        const desc = els.inputRoomDesc.value.trim() || 'Özel sesli sohbet odası';
+        if (!name) return;
+        const id = 'oda-' + Date.now();
+        state.rooms.push({ id, name, desc, icon: 'radio' });
+        closeModal('modal-room');
+        switchRoom(id);
+        showToast(`"${name}" odası oluşturuldu.`, 'success');
+      });
+
+      // Profile Modal
+      document.getElementById('btn-edit-profile').addEventListener('click', () => {
+        els.inputUsername.value = state.userName;
+        els.inputUserhandle.value = state.userHandle.replace(/^@/, '');
+        state.selectedColor = state.userColor;
+        renderColorPicker();
+        openModal('modal-profile');
+      });
+
+      els.formProfile.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const name = els.inputUsername.value.trim();
+        const handle = normalizeHandle(els.inputUserhandle.value.trim() || name);
+        if (!name) return;
+        state.userName = name;
+        state.userHandle = handle;
+        state.userColor = state.selectedColor;
+        try {
+          localStorage.setItem('seslioda_profile', JSON.stringify({
+            name: state.userName,
+            handle: state.userHandle,
+            color: state.userColor
+          }));
+        } catch (_) {}
+        closeModal('modal-profile');
+        if (socket && state.serverConnected) {
+          socket.emit('register', { name: state.userName, handle: state.userHandle, color: state.userColor });
+        }
+        sendPeerSignal({ type: 'hello', name: state.userName, handle: state.userHandle, color: state.userColor, muted: isEffectivelyMuted() });
+        broadcastPresence();
+        updateAllUI();
+        showToast(`Profil güncellendi (${state.userHandle}).`, 'success');
+      });
+
+      document.querySelectorAll('[data-close-modal]').forEach(btn => {
+        btn.addEventListener('click', () => closeModal(btn.dataset.closeModal));
+      });
+
+      document.getElementById('btn-toggle-sidebar').addEventListener('click', () => {
+        const isClosed = els.leftSidebar.classList.contains('-translate-x-full');
+        closeMobileDrawers();
+        if (isClosed) {
+          els.leftSidebar.classList.remove('-translate-x-full');
+          els.mobileBackdrop.classList.remove('hidden');
+        }
+      });
+
+      document.getElementById('btn-toggle-chat').addEventListener('click', () => {
+        if (state.viewMode === 'chat') {
+          setViewMode('voice');
+          return;
+        }
+        const isClosed = els.rightChat.classList.contains('translate-x-full');
+        closeMobileDrawers();
+        if (isClosed) {
+          els.rightChat.classList.remove('translate-x-full');
+          els.mobileBackdrop.classList.remove('hidden');
+          els.chatUnreadBadge.classList.add('hidden');
+          state.chatOpenMobile = true;
+        }
+      });
+
+      document.getElementById('btn-close-chat').addEventListener('click', closeMobileDrawers);
+      els.mobileBackdrop.addEventListener('click', closeMobileDrawers);
+
+      window.addEventListener('resize', resizeCanvas);
+
+      // --- Init ---
+      window.addEventListener('load', () => {
+        resizeCanvas();
+        renderEmojiGrid();
+        initBroadcastChannel();
+        initServerSocket();
+        updateAllUI();
+        setViewMode('chat');
+        startVisualizerLoop();
+      });
+    })();
+  </script>
+</body>
+</html>
