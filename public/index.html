@@ -1,0 +1,1138 @@
+<!DOCTYPE html>
+<html lang="tr" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SesliOda — Anlık Sesli Sohbet & Mesajlaşma</title>
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
+          },
+          colors: {
+            surface: {
+              950: '#0b0d13',
+              900: '#11141d',
+              850: '#161a26',
+              800: '#1c2130',
+              700: '#262d40',
+            }
+          }
+        }
+      }
+    };
+  </script>
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background-color: #0b0d13;
+      color: #f1f5f9;
+      font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      overflow-x: hidden;
+    }
+
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #2a3145; border-radius: 9999px; }
+    ::-webkit-scrollbar-thumb:hover { background: #3b4560; }
+
+    @keyframes speakPulse {
+      0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.55); }
+      70% { box-shadow: 0 0 0 12px rgba(16, 185, 129, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+    }
+    .speaking-ring {
+      border-color: #10b981 !important;
+      animation: speakPulse 1.4s infinite;
+    }
+    .speaking-card {
+      border-color: rgba(16, 185, 129, 0.65) !important;
+      background: linear-gradient(145deg, rgba(16, 185, 129, 0.08), rgba(22, 26, 38, 0.95)) !important;
+    }
+
+    @keyframes floatUp {
+      0% { opacity: 1; transform: translate(-50%, 0) scale(0.8); }
+      30% { opacity: 1; transform: translate(-50%, -26px) scale(1.25); }
+      100% { opacity: 0; transform: translate(-50%, -72px) scale(1.0); }
+    }
+    .reaction-float {
+      position: absolute;
+      left: 50%;
+      top: 18px;
+      pointer-events: none;
+      font-size: 1.75rem;
+      animation: floatUp 1.3s ease-out forwards;
+      z-index: 20;
+    }
+
+    .tg-wallpaper {
+      background-color: #0d131c;
+      background-image:
+        radial-gradient(rgba(99, 102, 241, 0.09) 1px, transparent 1px),
+        radial-gradient(rgba(56, 189, 248, 0.06) 1px, transparent 1px);
+      background-size: 28px 28px;
+      background-position: 0 0, 14px 14px;
+    }
+
+    .tg-bubble-out {
+      background: linear-gradient(135deg, #2b5278 0%, #26486b 100%);
+      border-radius: 16px 16px 4px 16px;
+    }
+    .tg-bubble-in {
+      background: #182230;
+      border-radius: 16px 16px 16px 4px;
+    }
+
+    @keyframes highlightFlash {
+      0% { background-color: rgba(99, 102, 241, 0.35); }
+      100% { background-color: transparent; }
+    }
+    .msg-highlight {
+      animation: highlightFlash 1.2s ease-out;
+      border-radius: 12px;
+    }
+
+    input[type="range"] {
+      -webkit-appearance: none;
+      appearance: none;
+      background: #262d40;
+      height: 6px;
+      border-radius: 9999px;
+      outline: none;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #6366f1;
+      cursor: pointer;
+      border: 2px solid #e0e7ff;
+    }
+    input[type="range"]::-moz-range-thumb {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #6366f1;
+      cursor: pointer;
+      border: 2px solid #e0e7ff;
+    }
+  </style>
+  <script src="/socket.io/socket.io.js"></script>
+</head>
+<body class="h-screen flex flex-col overflow-hidden bg-surface-950 text-slate-100 select-none">
+
+  <!-- Top Header -->
+  <header class="h-14 shrink-0 bg-surface-900 border-b border-slate-800/80 px-3 sm:px-5 flex items-center justify-between gap-2 z-30">
+    <div class="flex items-center gap-2.5 min-w-0">
+      <button id="btn-toggle-sidebar" type="button" class="lg:hidden p-2 rounded-lg text-slate-300 hover:bg-surface-800 hover:text-white transition" aria-label="Menüyü Aç">
+        <i data-lucide="menu" class="w-5 h-5"></i>
+      </button>
+      <div class="w-8 h-8 rounded-xl bg-gradient-to-br from-indigo-500 to-sky-500 flex items-center justify-center shadow-lg shadow-indigo-500/20 shrink-0">
+        <i data-lucide="radio" class="w-4 h-4 text-white"></i>
+      </div>
+      <div class="min-w-0">
+        <div class="flex items-center gap-2">
+          <h1 class="text-sm sm:text-base font-bold tracking-tight text-white truncate">SesliOda</h1>
+          <span id="network-mode-badge" class="hidden md:inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/25">
+            <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+            WebRTC P2P
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Center Mode Switcher -->
+    <div class="flex items-center bg-surface-950 border border-slate-800 rounded-xl p-1 gap-1 shrink-0">
+      <button id="btn-mode-voice" type="button" class="inline-flex items-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 text-white transition">
+        <i data-lucide="headphones" class="w-3.5 h-3.5"></i>
+        <span>Sesli Oda</span>
+      </button>
+      <button id="btn-mode-chat" type="button" class="relative inline-flex items-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-lg text-xs font-semibold text-slate-400 hover:text-white transition">
+        <i data-lucide="send" class="w-3.5 h-3.5"></i>
+        <span>Mesajlar</span>
+        <span id="tg-total-unread" class="hidden px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-sky-500 text-white leading-tight">0</span>
+      </button>
+    </div>
+
+    <div class="flex items-center gap-1.5 sm:gap-2 shrink-0">
+      <button id="btn-open-connect" type="button" class="inline-flex items-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs sm:text-sm font-medium transition shadow-sm shadow-indigo-600/30">
+        <i data-lucide="link-2" class="w-4 h-4"></i>
+        <span class="hidden sm:inline">P2P Bağlan / Davet Et</span>
+        <span class="sm:hidden">Bağlan</span>
+      </button>
+      <button id="btn-open-settings" type="button" class="p-2 rounded-lg text-slate-300 hover:bg-surface-800 hover:text-white transition" title="Ses Ayarları" aria-label="Ses Ayarları">
+        <i data-lucide="sliders-horizontal" class="w-4 h-4 sm:w-5 sm:h-5"></i>
+      </button>
+      <button id="btn-toggle-chat" type="button" class="xl:hidden relative p-2 rounded-lg text-slate-300 hover:bg-surface-800 hover:text-white transition" title="Oda Sohbeti" aria-label="Oda Sohbeti">
+        <i data-lucide="message-square" class="w-4 h-4 sm:w-5 sm:h-5"></i>
+        <span id="chat-unread-badge" class="hidden absolute top-1 right-1 w-2 h-2 rounded-full bg-rose-500"></span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Workspace -->
+  <div class="flex-1 flex min-h-0 relative overflow-hidden">
+
+    <!-- Mobile Backdrop -->
+    <div id="mobile-backdrop" class="hidden fixed inset-0 bg-black/60 backdrop-blur-xs z-30 lg:hidden"></div>
+
+    <!-- Left Sidebar -->
+    <aside id="left-sidebar" class="fixed lg:static inset-y-14 left-0 z-40 w-72 shrink-0 bg-surface-900 border-r border-slate-800/80 flex flex-col transform -translate-x-full lg:translate-x-0 transition-transform duration-200">
+      <!-- Sidebar Tabs -->
+      <div class="p-2.5 border-b border-slate-800/70 grid grid-cols-2 gap-1.5">
+        <button id="sidebar-tab-voice" type="button" class="py-1.5 px-2 rounded-lg text-xs font-semibold bg-surface-800 text-white border border-slate-700/70 transition flex items-center justify-center gap-1.5">
+          <i data-lucide="volume-2" class="w-3.5 h-3.5 text-indigo-400"></i>
+          Ses Odaları
+        </button>
+        <button id="sidebar-tab-tg" type="button" class="py-1.5 px-2 rounded-lg text-xs font-semibold text-slate-400 hover:text-white hover:bg-surface-850 border border-transparent transition flex items-center justify-center gap-1.5">
+          <i data-lucide="messages-square" class="w-3.5 h-3.5 text-sky-400"></i>
+          Sohbetler
+        </button>
+      </div>
+
+      <!-- Sidebar Panel A: Voice Channels -->
+      <div id="sidebar-voice-panel" class="flex-1 flex flex-col min-h-0">
+        <div class="px-3.5 py-2.5 border-b border-slate-800/50 flex items-center justify-between">
+          <span class="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Ses Kanalları</span>
+          <button id="btn-new-room" type="button" class="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium text-indigo-300 hover:bg-indigo-500/15 hover:text-indigo-200 transition" title="Yeni Oda Oluştur">
+            <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+            Yeni
+          </button>
+        </div>
+        <div id="rooms-list" class="flex-1 overflow-y-auto p-2.5 space-y-1">
+          <!-- Rendered by JS -->
+        </div>
+      </div>
+
+      <!-- Sidebar Panel B: Telegram Chats & @Username Search -->
+      <div id="sidebar-tg-panel" class="hidden flex-1 flex flex-col min-h-0">
+        <div class="p-2.5 border-b border-slate-800/60 space-y-2">
+          <button id="btn-find-user" type="button" class="w-full py-2 px-3 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold flex items-center justify-center gap-1.5 shadow-sm shadow-sky-600/25 transition">
+            <i data-lucide="at-sign" class="w-3.5 h-3.5"></i>
+            <span>Kullanıcı Adı ile Arkadaş Bul</span>
+          </button>
+          <div class="flex items-center gap-1.5">
+            <div class="relative flex-1 min-w-0">
+              <i data-lucide="search" class="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none"></i>
+              <input id="tg-chat-search" type="text" placeholder="Sohbet veya @kullanici ara..." class="w-full bg-surface-850 border border-slate-800 focus:border-sky-500 rounded-lg pl-8 pr-2.5 py-1.5 text-xs text-white placeholder-slate-500 outline-none" />
+            </div>
+            <button id="btn-new-tg-chat" type="button" class="p-1.5 rounded-lg bg-surface-800 hover:bg-surface-700 text-sky-300 border border-slate-700/70 transition shrink-0" title="Yeni Grup Oluştur">
+              <i data-lucide="users" class="w-4 h-4"></i>
+            </button>
+          </div>
+        </div>
+        <div id="tg-chats-list" class="flex-1 overflow-y-auto p-2 space-y-1">
+          <!-- Rendered by JS -->
+        </div>
+      </div>
+
+      <!-- Connection Status Card -->
+      <div class="p-3 border-t border-slate-800/80 bg-surface-950/60">
+        <div class="flex items-center justify-between mb-1">
+          <div class="flex items-center gap-1.5 min-w-0">
+            <span id="status-dot" class="w-2 h-2 rounded-full bg-slate-500 shrink-0"></span>
+            <span id="status-label" class="text-xs font-semibold text-slate-300 truncate">Bağlı Değil</span>
+          </div>
+          <span id="ping-badge" class="text-[11px] font-mono text-slate-500">-- ms</span>
+        </div>
+        <p id="status-sublabel" class="text-[11px] text-slate-400 truncate">Katılmak için aşağıdan mikrofonu açın</p>
+      </div>
+
+      <!-- User Profile Bar -->
+      <div class="p-3 border-t border-slate-800/80 bg-surface-900 flex items-center justify-between gap-2">
+        <button id="btn-edit-profile" type="button" class="flex items-center gap-2.5 min-w-0 flex-1 text-left rounded-lg p-1 -m-1 hover:bg-surface-800 transition" title="Adını ve @kullanıcı adını düzenle">
+          <div id="user-avatar-badge" class="w-9 h-9 rounded-full bg-indigo-600 flex items-center justify-center text-sm font-bold text-white shrink-0">
+            SN
+          </div>
+          <div class="min-w-0">
+            <div id="user-name-display" class="text-sm font-semibold text-white truncate">Sen</div>
+            <div id="user-handle-display" class="text-[11px] text-sky-400 font-mono truncate">@sen</div>
+          </div>
+        </button>
+        <button id="btn-copy-my-handle" type="button" class="p-2 rounded-lg text-slate-400 hover:bg-surface-800 hover:text-sky-300 transition" title="Kullanıcı adımı kopyala">
+          <i data-lucide="copy" class="w-4 h-4"></i>
+        </button>
+        <button id="btn-sidebar-mute" type="button" class="p-2 rounded-lg text-slate-300 hover:bg-surface-800 hover:text-white transition" title="Mikrofonu Aç/Kapat">
+          <i data-lucide="mic" class="w-4 h-4"></i>
+        </button>
+      </div>
+    </aside>
+
+    <!-- CENTER VIEW 1: Active Voice Room -->
+    <main id="voice-main-view" class="flex-1 flex flex-col min-w-0 bg-surface-950 relative">
+      <div class="px-4 sm:px-6 py-3.5 border-b border-slate-800/70 bg-surface-950/90 flex flex-wrap items-center justify-between gap-2">
+        <div class="flex items-center gap-2.5 min-w-0">
+          <div class="w-9 h-9 rounded-xl bg-surface-800 border border-slate-700/70 flex items-center justify-center text-indigo-400 shrink-0">
+            <i id="active-room-icon" data-lucide="volume-2" class="w-5 h-5"></i>
+          </div>
+          <div class="min-w-0">
+            <div class="flex items-center gap-2">
+              <h2 id="active-room-title" class="text-base sm:text-lg font-bold text-white truncate">Genel Sohbet</h2>
+              <span id="participant-count-pill" class="px-2 py-0.5 rounded-full text-xs font-medium bg-surface-800 text-slate-300 border border-slate-700/60">1 kişi</span>
+            </div>
+            <p id="active-room-desc" class="text-xs text-slate-400 truncate">Günlük sohbet ve anlık sesli buluşma odası</p>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <button id="btn-loopback" type="button" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-surface-800 text-slate-300 hover:bg-surface-700 hover:text-white border border-slate-700/60 transition" title="Kendi sesini duyarak mikrofonu test et">
+            <i data-lucide="ear" class="w-3.5 h-3.5"></i>
+            <span>Ses Testi</span>
+          </button>
+          <button id="btn-ptt-toggle" type="button" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-surface-800 text-slate-300 hover:bg-surface-700 hover:text-white border border-slate-700/60 transition" title="Bas-Konuş (Space tuşu ile konuş)">
+            <i data-lucide="keyboard" class="w-3.5 h-3.5"></i>
+            <span class="hidden sm:inline">Bas-Konuş</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="flex-1 overflow-y-auto p-4 sm:p-6 flex flex-col gap-5">
+        <div class="rounded-2xl bg-surface-900 border border-slate-800/80 p-4 flex flex-col sm:flex-row items-center gap-4">
+          <div class="flex-1 w-full min-w-0">
+            <div class="flex items-center justify-between mb-2">
+              <div class="flex items-center gap-2">
+                <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Canlı Ses Spektrumu</span>
+                <span id="audio-source-badge" class="px-2 py-0.5 rounded-full text-[11px] font-medium bg-surface-800 text-slate-400">Beklemede</span>
+              </div>
+              <span id="db-meter-text" class="text-xs font-mono text-slate-400">0%</span>
+            </div>
+            <div class="relative h-20 w-full rounded-xl bg-surface-950 border border-slate-800/70 overflow-hidden">
+              <canvas id="visualizer-canvas" class="w-full h-full block"></canvas>
+            </div>
+          </div>
+
+          <div class="w-full sm:w-52 shrink-0 flex flex-col gap-2">
+            <button id="btn-join-leave" type="button" class="w-full py-2.5 px-4 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/20 transition">
+              <i data-lucide="phone-call" class="w-4 h-4"></i>
+              <span>Sesli Odaya Katıl</span>
+            </button>
+            <button id="btn-sim-voice" type="button" class="w-full py-2 px-3 rounded-xl font-medium text-xs flex items-center justify-center gap-1.5 bg-surface-800 hover:bg-surface-700 text-slate-300 border border-slate-700/60 transition">
+              <i data-lucide="waves" class="w-3.5 h-3.5 text-indigo-400"></i>
+              <span>Test Sinyali Gönder</span>
+            </button>
+          </div>
+        </div>
+
+        <div id="ptt-banner" class="hidden rounded-xl bg-indigo-500/10 border border-indigo-500/30 px-4 py-2.5 flex items-center justify-between gap-2 text-xs text-indigo-200">
+          <div class="flex items-center gap-2">
+            <i data-lucide="info" class="w-4 h-4 text-indigo-400 shrink-0"></i>
+            <span><strong>Bas-Konuş aktif:</strong> Konuşmak için <kbd class="px-1.5 py-0.5 rounded bg-surface-800 border border-slate-700 text-white font-mono">Boşluk (Space)</kbd> tuşuna basılı tutun veya aşağıdaki butonu kullanın.</span>
+          </div>
+          <button id="btn-ptt-hold" type="button" class="px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold shrink-0 transition">Basılı Tut</button>
+        </div>
+
+        <div>
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-xs font-semibold uppercase tracking-wider text-slate-400">Odadaki Katılımcılar</h3>
+            <span id="p2p-status-pill" class="text-xs text-slate-400">Tek başına (P2P bekliyor)</span>
+          </div>
+          <div id="participants-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            <!-- Rendered by JS -->
+          </div>
+        </div>
+
+        <div class="mt-auto pt-2">
+          <div class="rounded-2xl bg-surface-900/80 border border-slate-800/70 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+            <span class="text-xs font-medium text-slate-400">Hızlı Tepki & Efekt</span>
+            <div class="flex items-center gap-1.5 flex-wrap">
+              <button data-reaction="👏" type="button" class="reaction-btn px-2.5 py-1.5 rounded-lg bg-surface-800 hover:bg-surface-700 text-base transition active:scale-95" title="Alkış">👏</button>
+              <button data-reaction="🔥" type="button" class="reaction-btn px-2.5 py-1.5 rounded-lg bg-surface-800 hover:bg-surface-700 text-base transition active:scale-95" title="Harika">🔥</button>
+              <button data-reaction="😂" type="button" class="reaction-btn px-2.5 py-1.5 rounded-lg bg-surface-800 hover:bg-surface-700 text-base transition active:scale-95" title="Kahkaha">😂</button>
+              <button data-reaction="👍" type="button" class="reaction-btn px-2.5 py-1.5 rounded-lg bg-surface-800 hover:bg-surface-700 text-base transition active:scale-95" title="Onay">👍</button>
+              <button data-reaction="🎉" type="button" class="reaction-btn px-2.5 py-1.5 rounded-lg bg-surface-800 hover:bg-surface-700 text-base transition active:scale-95" title="Kutlama">🎉</button>
+              <button id="btn-sound-chime" type="button" class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-300 text-xs font-medium border border-indigo-500/25 transition" title="Sesli Bildirim Çal">
+                <i data-lucide="bell-ring" class="w-3.5 h-3.5"></i>
+                Zil
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="shrink-0 bg-surface-900 border-t border-slate-800/80 px-4 py-3 flex items-center justify-center gap-2.5 sm:gap-3.5">
+        <button id="btn-mic" type="button" class="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-surface-800 hover:bg-surface-700 text-white font-medium text-sm border border-slate-700/70 transition" title="Mikrofonu Aç/Kapat (M)">
+          <i id="icon-mic" data-lucide="mic" class="w-5 h-5"></i>
+          <span id="label-mic" class="hidden sm:inline">Mikrofon</span>
+        </button>
+
+        <button id="btn-deafen" type="button" class="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-surface-800 hover:bg-surface-700 text-white font-medium text-sm border border-slate-700/70 transition" title="Sesi Kapat / Sağırlaştır (D)">
+          <i id="icon-deafen" data-lucide="headphones" class="w-5 h-5"></i>
+          <span id="label-deafen" class="hidden sm:inline">Kulaklık</span>
+        </button>
+
+        <button id="btn-dock-connect" type="button" class="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 font-medium text-sm border border-indigo-500/30 transition" title="Başka biriyle P2P sesli bağlan">
+          <i data-lucide="user-plus" class="w-5 h-5"></i>
+          <span class="hidden sm:inline">Davet Et</span>
+        </button>
+
+        <button id="btn-disconnect" type="button" class="hidden items-center gap-2 px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-medium text-sm shadow-lg shadow-rose-600/25 transition" title="Odadan Ayrıl">
+          <i data-lucide="phone-off" class="w-5 h-5"></i>
+          <span class="hidden sm:inline">Ayrıl</span>
+        </button>
+      </div>
+    </main>
+
+    <!-- CENTER VIEW 2: Telegram-Style Messaging View -->
+    <section id="tg-main-view" class="hidden flex-1 flex flex-col min-w-0 tg-wallpaper relative">
+      <!-- Active Voice Mini Bar -->
+      <div id="tg-voice-minibar" class="hidden shrink-0 bg-emerald-950/90 border-b border-emerald-500/30 px-4 py-2 flex items-center justify-between gap-2">
+        <div class="flex items-center gap-2 min-w-0">
+          <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0"></span>
+          <span id="tg-voice-minibar-text" class="text-xs font-medium text-emerald-200 truncate">Sesli oda aktif</span>
+        </div>
+        <div class="flex items-center gap-1.5 shrink-0">
+          <button id="btn-minibar-return" type="button" class="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition">Odaya Dön</button>
+          <button id="btn-minibar-mute" type="button" class="p-1.5 rounded-lg bg-surface-900/70 hover:bg-surface-800 text-slate-200 transition" title="Sustur">
+            <i data-lucide="mic" class="w-3.5 h-3.5"></i>
+          </button>
+          <button id="btn-minibar-leave" type="button" class="p-1.5 rounded-lg bg-rose-600/80 hover:bg-rose-500 text-white transition" title="Ayrıl">
+            <i data-lucide="phone-off" class="w-3.5 h-3.5"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- Telegram Chat Header -->
+      <div class="shrink-0 bg-surface-900/95 border-b border-slate-800/80 px-4 py-2.5 flex items-center justify-between gap-3">
+        <div class="flex items-center gap-3 min-w-0">
+          <div id="tg-header-avatar" class="w-10 h-10 rounded-full bg-sky-600 flex items-center justify-center text-sm font-bold text-white shrink-0">
+            GG
+          </div>
+          <div class="min-w-0">
+            <div class="flex items-center gap-2">
+              <h2 id="tg-header-title" class="text-sm sm:text-base font-bold text-white truncate">Genel Grup</h2>
+              <span id="tg-header-badge" class="hidden px-1.5 py-0.5 rounded-md text-[10px] font-semibold bg-sky-500/15 text-sky-300 border border-sky-500/25">Grup</span>
+            </div>
+            <p id="tg-header-sub" class="text-xs text-sky-400 truncate">çevrimiçi</p>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-1.5 shrink-0">
+          <button id="btn-tg-search-toggle" type="button" class="p-2 rounded-lg text-slate-300 hover:bg-surface-800 hover:text-white transition" title="Mesajlarda Ara">
+            <i data-lucide="search" class="w-4 h-4"></i>
+          </button>
+          <button id="btn-tg-start-call" type="button" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 text-xs font-semibold transition" title="Sesli Aramaya Geç">
+            <i data-lucide="phone-call" class="w-3.5 h-3.5"></i>
+            <span class="hidden sm:inline">Sesli Ara</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- In-Chat Search Bar -->
+      <div id="tg-inchat-search-bar" class="hidden shrink-0 bg-surface-900 border-b border-slate-800 px-4 py-2 flex items-center gap-2">
+        <i data-lucide="search" class="w-4 h-4 text-slate-400 shrink-0"></i>
+        <input id="tg-msg-search-input" type="text" placeholder="Bu sohbette mesaj ara..." class="flex-1 bg-transparent text-sm text-white placeholder-slate-500 outline-none" />
+        <span id="tg-search-count" class="text-xs text-slate-400 font-mono"></span>
+        <button id="btn-tg-search-close" type="button" class="p-1 rounded-md text-slate-400 hover:text-white hover:bg-surface-800">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <!-- Pinned Message Banner -->
+      <div id="tg-pinned-bar" class="hidden shrink-0 bg-surface-900/90 border-b border-slate-800/80 px-4 py-2 flex items-center justify-between gap-3 cursor-pointer hover:bg-surface-850 transition">
+        <div class="flex items-center gap-2.5 min-w-0">
+          <div class="w-1 h-7 rounded-full bg-sky-400 shrink-0"></div>
+          <div class="min-w-0">
+            <div class="text-[11px] font-semibold text-sky-400 flex items-center gap-1">
+              <i data-lucide="pin" class="w-3 h-3"></i>
+              Sabitlenen Mesaj
+            </div>
+            <p id="tg-pinned-text" class="text-xs text-slate-300 truncate"></p>
+          </div>
+        </div>
+        <button id="btn-tg-unpin" type="button" class="p-1 rounded-md text-slate-400 hover:text-white hover:bg-surface-800 shrink-0" title="Sabitlemeyi Kaldır">
+          <i data-lucide="x" class="w-3.5 h-3.5"></i>
+        </button>
+      </div>
+
+      <!-- Messages Stream -->
+      <div id="tg-messages-area" class="flex-1 overflow-y-auto px-3 sm:px-6 py-4 space-y-2.5 select-text">
+        <!-- Rendered by JS -->
+      </div>
+
+      <!-- Typing Indicator -->
+      <div id="tg-typing-bar" class="hidden px-5 py-1 text-xs text-sky-400 flex items-center gap-1.5">
+        <span class="inline-flex gap-0.5">
+          <span class="w-1.5 h-1.5 rounded-full bg-sky-400 animate-bounce"></span>
+          <span class="w-1.5 h-1.5 rounded-full bg-sky-400 animate-bounce" style="animation-delay:0.12s"></span>
+          <span class="w-1.5 h-1.5 rounded-full bg-sky-400 animate-bounce" style="animation-delay:0.24s"></span>
+        </span>
+        <span id="tg-typing-text">yazıyor...</span>
+      </div>
+
+      <!-- Reply Preview Bar -->
+      <div id="tg-reply-bar" class="hidden shrink-0 bg-surface-900 border-t border-slate-800 px-4 py-2 flex items-center justify-between gap-3">
+        <div class="flex items-center gap-2.5 min-w-0">
+          <i data-lucide="reply" class="w-4 h-4 text-sky-400 shrink-0"></i>
+          <div class="w-0.5 h-7 bg-sky-400 rounded-full shrink-0"></div>
+          <div class="min-w-0">
+            <div id="tg-reply-author" class="text-xs font-semibold text-sky-400 truncate"></div>
+            <div id="tg-reply-preview" class="text-xs text-slate-300 truncate"></div>
+          </div>
+        </div>
+        <button id="btn-tg-cancel-reply" type="button" class="p-1 rounded-md text-slate-400 hover:text-white hover:bg-surface-800">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <!-- Emoji Popover -->
+      <div id="tg-emoji-popover" class="hidden absolute bottom-16 left-4 z-30 bg-surface-900 border border-slate-700/80 rounded-2xl shadow-2xl p-2.5 w-64">
+        <div class="text-[11px] font-semibold text-slate-400 mb-2 px-1">Hızlı Emojiler</div>
+        <div id="tg-emoji-grid" class="grid grid-cols-6 gap-1"></div>
+      </div>
+
+      <!-- Telegram Composer Bar -->
+      <div class="shrink-0 bg-surface-900 border-t border-slate-800/80 px-3 sm:px-4 py-2.5">
+        <form id="tg-composer-form" class="flex items-center gap-2">
+          <input id="tg-file-input" type="file" class="hidden" accept="image/*,.pdf,.txt,.zip,.doc,.docx,.mp3,.wav" />
+          <button id="btn-tg-attach" type="button" class="p-2.5 rounded-xl text-slate-400 hover:text-white hover:bg-surface-800 transition shrink-0" title="Fotoğraf veya Dosya Gönder">
+            <i data-lucide="paperclip" class="w-5 h-5"></i>
+          </button>
+          <button id="btn-tg-emoji" type="button" class="p-2.5 rounded-xl text-slate-400 hover:text-white hover:bg-surface-800 transition shrink-0" title="Emoji">
+            <i data-lucide="smile" class="w-5 h-5"></i>
+          </button>
+          <input id="tg-composer-input" type="text" maxlength="1000" autocomplete="off" placeholder="Mesaj yaz..." class="flex-1 min-w-0 bg-surface-850 border border-slate-700/80 focus:border-sky-500 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-slate-500 outline-none transition" />
+          <button id="btn-tg-voice-note" type="button" class="p-2.5 rounded-xl bg-surface-800 hover:bg-surface-700 text-sky-400 border border-slate-700/70 transition shrink-0" title="Sesli Mesaj Kaydet">
+            <i data-lucide="mic" class="w-5 h-5"></i>
+          </button>
+          <button id="btn-tg-send" type="submit" class="p-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white transition shrink-0 shadow-sm shadow-sky-600/30" aria-label="Gönder">
+            <i data-lucide="send" class="w-5 h-5"></i>
+          </button>
+        </form>
+
+        <div id="tg-recording-bar" class="hidden flex items-center justify-between gap-3 py-1">
+          <div class="flex items-center gap-2.5">
+            <span class="w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse"></span>
+            <span class="text-sm font-semibold text-rose-300">Sesli mesaj kaydediliyor</span>
+            <span id="tg-rec-timer" class="text-sm font-mono text-white bg-surface-800 px-2 py-0.5 rounded-md">0:00</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <button id="btn-tg-rec-cancel" type="button" class="px-3 py-1.5 rounded-xl bg-surface-800 hover:bg-surface-700 text-slate-300 text-xs font-semibold transition">İptal</button>
+            <button id="btn-tg-rec-send" type="button" class="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold transition">
+              <i data-lucide="send" class="w-3.5 h-3.5"></i>
+              Gönder
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Right Panel: Live Room Text Chat (Voice Mode) -->
+    <aside id="right-chat" class="fixed xl:static inset-y-14 right-0 z-40 w-80 max-w-[90vw] shrink-0 bg-surface-900 border-l border-slate-800/80 flex flex-col transform translate-x-full xl:translate-x-0 transition-transform duration-200">
+      <div class="p-3.5 border-b border-slate-800/70 flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <i data-lucide="message-square" class="w-4 h-4 text-indigo-400"></i>
+          <span class="text-xs font-semibold uppercase tracking-wider text-slate-300">Oda Sohbeti</span>
+        </div>
+        <div class="flex items-center gap-1">
+          <button id="btn-expand-to-tg" type="button" class="px-2 py-1 rounded-md text-[11px] font-medium text-sky-300 hover:bg-sky-500/15 transition" title="Tam Ekran Mesajlaşma">
+            Tam Ekran
+          </button>
+          <button id="btn-close-chat" type="button" class="xl:hidden p-1 rounded-md text-slate-400 hover:text-white hover:bg-surface-800">
+            <i data-lucide="x" class="w-4 h-4"></i>
+          </button>
+        </div>
+      </div>
+
+      <div id="chat-messages" class="flex-1 overflow-y-auto p-3.5 space-y-3 select-text"></div>
+
+      <form id="chat-form" class="p-3 border-t border-slate-800/80 bg-surface-900 flex items-center gap-2">
+        <input id="chat-input" type="text" maxlength="400" placeholder="Odaya mesaj yaz..." autocomplete="off" class="flex-1 min-w-0 bg-surface-850 border border-slate-700/80 focus:border-indigo-500 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-500 outline-none transition" />
+        <button type="submit" class="p-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white transition shrink-0" aria-label="Gönder">
+          <i data-lucide="send" class="w-4 h-4"></i>
+        </button>
+      </form>
+    </aside>
+  </div>
+
+  <!-- Hidden remote audio element -->
+  <audio id="remote-audio" autoplay playsinline></audio>
+
+  <!-- MODAL: Find Friend by @Username -->
+  <div id="modal-find-user" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs">
+    <div class="w-full max-w-md rounded-2xl bg-surface-900 border border-slate-700/80 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+      <div class="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
+        <div class="flex items-center gap-2.5">
+          <div class="w-8 h-8 rounded-lg bg-sky-500/20 text-sky-400 flex items-center justify-center">
+            <i data-lucide="at-sign" class="w-4 h-4"></i>
+          </div>
+          <div>
+            <h3 class="text-base font-bold text-white">Kullanıcı Adı ile Arkadaş Bul</h3>
+            <p class="text-xs text-slate-400">Senin kullanıcı adın: <span id="modal-my-handle" class="text-sky-400 font-mono font-semibold">@sen</span></p>
+          </div>
+        </div>
+        <button data-close-modal="modal-find-user" type="button" class="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-surface-800">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <div class="p-5 space-y-4 overflow-y-auto">
+        <form id="form-find-user" class="flex items-center gap-2">
+          <div class="relative flex-1">
+            <span class="absolute left-3 top-1/2 -translate-y-1/2 text-sky-400 font-mono text-sm">@</span>
+            <input id="input-find-handle" type="text" required maxlength="24" placeholder="arkadas_kullanici_adi" autocomplete="off" class="w-full bg-surface-850 border border-slate-700 focus:border-sky-500 rounded-xl pl-7 pr-3 py-2.5 text-sm text-white font-mono outline-none" />
+          </div>
+          <button type="submit" class="px-4 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-sm font-semibold transition shrink-0">Sohbet Aç</button>
+        </form>
+
+        <div>
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Çevrimiçi Kullanıcılar</span>
+            <span id="online-directory-count" class="text-[11px] text-emerald-400 font-medium">0 kişi</span>
+          </div>
+          <div id="online-users-list" class="space-y-1.5 max-h-48 overflow-y-auto">
+            <!-- Rendered by JS -->
+          </div>
+        </div>
+
+        <div id="find-user-help-box" class="rounded-xl bg-surface-850 border border-slate-800 p-3 text-xs text-slate-300 leading-relaxed space-y-1.5">
+          <div class="font-semibold text-sky-300 flex items-center gap-1.5">
+            <i data-lucide="globe" class="w-3.5 h-3.5"></i>
+            Arkadaşınla gerçek zamanlı nasıl konuşursun?
+          </div>
+          <p class="text-slate-400">
+            <strong>1. Farklı cihazdan bağlanmak için:</strong> Sunucu paketini (<span class="font-mono text-slate-200">seslioda-sunucu.zip</span>) çalıştırdığında herkes kendi <span class="font-mono text-sky-300">@kullaniciadi</span> ile yukarıdaki listede otomatik görünür ve tek tıkla mesajlaşıp sesli konuşabilir.
+          </p>
+          <p class="text-slate-400">
+            <strong>2. Sunucusuz hemen bağlanmak için:</strong> Üstteki <strong>P2P Bağlan</strong> ile arkadaşınla doğrudan bağlantı kurabilir veya bu dosyayı tarayıcıda iki sekmede açıp farklı <span class="font-mono text-sky-300">@kullaniciadi</span> vererek anlık mesajlaşmayı test edebilirsin.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 1: P2P WebRTC Connection Modal -->
+  <div id="modal-connect" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs">
+    <div class="w-full max-w-lg rounded-2xl bg-surface-900 border border-slate-700/80 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+      <div class="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
+        <div class="flex items-center gap-2.5">
+          <div class="w-8 h-8 rounded-lg bg-indigo-500/20 text-indigo-400 flex items-center justify-center">
+            <i data-lucide="link-2" class="w-4 h-4"></i>
+          </div>
+          <div>
+            <h3 class="text-base font-bold text-white">Doğrudan Bağlantı (WebRTC P2P)</h3>
+            <p class="text-xs text-slate-400">Sunucu gerektirmeden sesli arama ve anlık mesajlaşma kur</p>
+          </div>
+        </div>
+        <button data-close-modal="modal-connect" type="button" class="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-surface-800">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <div class="px-5 pt-3 flex gap-2 border-b border-slate-800">
+        <button id="tab-host" type="button" class="pb-2.5 px-2 text-sm font-semibold border-b-2 border-indigo-500 text-indigo-400 transition">1. Davet Kodu Oluştur</button>
+        <button id="tab-join" type="button" class="pb-2.5 px-2 text-sm font-semibold border-b-2 border-transparent text-slate-400 hover:text-slate-200 transition">2. Koda Katıl</button>
+      </div>
+
+      <div class="p-5 overflow-y-auto space-y-4">
+        <div id="panel-host" class="space-y-4">
+          <div class="rounded-xl bg-surface-850 border border-slate-800 p-3.5 space-y-2.5">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-semibold text-slate-300">Adım 1: Davet kodunu oluştur ve arkadaşına gönder</span>
+              <button id="btn-create-offer" type="button" class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition">Kod Oluştur</button>
+            </div>
+            <textarea id="host-offer-code" readonly rows="3" placeholder="Kod Oluştur'a tıkladığınızda bağlantı kodunuz burada görünür..." class="w-full bg-surface-950 border border-slate-800 rounded-lg p-2.5 text-xs font-mono text-emerald-300 outline-none resize-none select-all"></textarea>
+            <div class="flex justify-end">
+              <button id="btn-copy-offer" type="button" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-800 hover:bg-surface-700 text-slate-200 text-xs font-medium transition">
+                <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+                Kodu Kopyala
+              </button>
+            </div>
+          </div>
+
+          <div class="rounded-xl bg-surface-850 border border-slate-800 p-3.5 space-y-2.5">
+            <span class="text-xs font-semibold text-slate-300 block">Adım 2: Arkadaşından gelen yanıt kodunu buraya yapıştır</span>
+            <textarea id="host-answer-input" rows="3" placeholder="Arkadaşının gönderdiği yanıt kodunu yapıştır..." class="w-full bg-surface-950 border border-slate-800 focus:border-indigo-500 rounded-lg p-2.5 text-xs font-mono text-slate-200 outline-none resize-none"></textarea>
+            <div class="flex justify-end">
+              <button id="btn-accept-answer" type="button" class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition">Bağlantıyı Tamamla</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="panel-join" class="hidden space-y-4">
+          <div class="rounded-xl bg-surface-850 border border-slate-800 p-3.5 space-y-2.5">
+            <span class="text-xs font-semibold text-slate-300 block">Adım 1: Arkadaşının gönderdiği davet kodunu yapıştır</span>
+            <textarea id="guest-offer-input" rows="3" placeholder="Davet kodunu buraya yapıştır..." class="w-full bg-surface-950 border border-slate-800 focus:border-indigo-500 rounded-lg p-2.5 text-xs font-mono text-slate-200 outline-none resize-none"></textarea>
+            <div class="flex justify-end">
+              <button id="btn-create-answer" type="button" class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition">Yanıt Kodu Üret</button>
+            </div>
+          </div>
+
+          <div class="rounded-xl bg-surface-850 border border-slate-800 p-3.5 space-y-2.5">
+            <span class="text-xs font-semibold text-slate-300 block">Adım 2: Oluşan yanıt kodunu arkadaşına geri gönder</span>
+            <textarea id="guest-answer-code" readonly rows="3" placeholder="Yanıt kodunuz burada oluşacak..." class="w-full bg-surface-950 border border-slate-800 rounded-lg p-2.5 text-xs font-mono text-emerald-300 outline-none resize-none select-all"></textarea>
+            <div class="flex justify-end">
+              <button id="btn-copy-answer" type="button" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-800 hover:bg-surface-700 text-slate-200 text-xs font-medium transition">
+                <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+                Yanıtı Kopyala
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="rounded-xl bg-indigo-500/10 border border-indigo-500/20 p-3 text-xs text-indigo-200 flex items-start gap-2.5">
+          <i data-lucide="sparkles" class="w-4 h-4 text-indigo-400 shrink-0 mt-0.5"></i>
+          <span>Bağlandığınızda arkadaşının <span class="font-mono">@kullaniciadi</span> otomatik olarak Mesajlar listene eklenir ve hem sesli hem yazılı konuşabilirsiniz.</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 2: Audio Settings Modal -->
+  <div id="modal-settings" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs">
+    <div class="w-full max-w-md rounded-2xl bg-surface-900 border border-slate-700/80 shadow-2xl overflow-hidden">
+      <div class="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <i data-lucide="sliders-horizontal" class="w-4 h-4 text-indigo-400"></i>
+          <h3 class="text-base font-bold text-white">Ses & Cihaz Ayarları</h3>
+        </div>
+        <button data-close-modal="modal-settings" type="button" class="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-surface-800">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <div class="p-5 space-y-4">
+        <div>
+          <label for="select-mic" class="block text-xs font-semibold text-slate-300 mb-1.5">Mikrofon Cihazı</label>
+          <select id="select-mic" class="w-full bg-surface-850 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white outline-none focus:border-indigo-500">
+            <option value="default">Varsayılan Mikrofon</option>
+          </select>
+        </div>
+
+        <div>
+          <div class="flex items-center justify-between mb-1.5">
+            <label for="slider-mic-gain" class="text-xs font-semibold text-slate-300">Mikrofon Giriş Seviyesi</label>
+            <span id="val-mic-gain" class="text-xs font-mono text-indigo-300">100%</span>
+          </div>
+          <input id="slider-mic-gain" type="range" min="0" max="200" value="100" class="w-full" />
+        </div>
+
+        <div>
+          <div class="flex items-center justify-between mb-1.5">
+            <label for="slider-output-vol" class="text-xs font-semibold text-slate-300">Çıkış Ses Seviyesi</label>
+            <span id="val-output-vol" class="text-xs font-mono text-indigo-300">100%</span>
+          </div>
+          <input id="slider-output-vol" type="range" min="0" max="100" value="100" class="w-full" />
+        </div>
+
+        <div class="space-y-2.5 pt-2 border-t border-slate-800">
+          <label class="flex items-center justify-between cursor-pointer">
+            <span class="text-sm text-slate-200">Yankı Engelleme (Echo Cancellation)</span>
+            <input id="chk-echo" type="checkbox" checked class="w-4 h-4 accent-indigo-500 rounded" />
+          </label>
+          <label class="flex items-center justify-between cursor-pointer">
+            <span class="text-sm text-slate-200">Gürültü Azaltma (Noise Suppression)</span>
+            <input id="chk-noise" type="checkbox" checked class="w-4 h-4 accent-indigo-500 rounded" />
+          </label>
+          <label class="flex items-center justify-between cursor-pointer">
+            <span class="text-sm text-slate-200">Arayüz Bildirim Sesleri</span>
+            <input id="chk-sfx" type="checkbox" checked class="w-4 h-4 accent-indigo-500 rounded" />
+          </label>
+        </div>
+      </div>
+
+      <div class="px-5 py-3.5 bg-surface-950/60 border-t border-slate-800 flex justify-end">
+        <button data-close-modal="modal-settings" type="button" class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold transition">Kaydet ve Kapat</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 3: Create Room Modal -->
+  <div id="modal-room" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs">
+    <div class="w-full max-w-sm rounded-2xl bg-surface-900 border border-slate-700/80 shadow-2xl overflow-hidden">
+      <div class="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
+        <h3 class="text-base font-bold text-white">Yeni Ses Odası Oluştur</h3>
+        <button data-close-modal="modal-room" type="button" class="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-surface-800">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+      <form id="form-new-room" class="p-5 space-y-4">
+        <div>
+          <label for="input-room-name" class="block text-xs font-semibold text-slate-300 mb-1.5">Oda Adı</label>
+          <input id="input-room-name" type="text" required maxlength="30" placeholder="Örn: Akşam Sohbeti" class="w-full bg-surface-850 border border-slate-700 focus:border-indigo-500 rounded-xl px-3 py-2 text-sm text-white outline-none" />
+        </div>
+        <div>
+          <label for="input-room-desc" class="block text-xs font-semibold text-slate-300 mb-1.5">Kısa Açıklama</label>
+          <input id="input-room-desc" type="text" maxlength="60" placeholder="Örn: Kahve eşliğinde sohbet" class="w-full bg-surface-850 border border-slate-700 focus:border-indigo-500 rounded-xl px-3 py-2 text-sm text-white outline-none" />
+        </div>
+        <div class="flex justify-end gap-2 pt-2">
+          <button data-close-modal="modal-room" type="button" class="px-3.5 py-2 rounded-xl bg-surface-800 hover:bg-surface-700 text-slate-300 text-sm font-medium transition">İptal</button>
+          <button type="submit" class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold transition">Oluştur</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL 4: Create Telegram Group Modal -->
+  <div id="modal-new-chat" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs">
+    <div class="w-full max-w-sm rounded-2xl bg-surface-900 border border-slate-700/80 shadow-2xl overflow-hidden">
+      <div class="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
+        <h3 class="text-base font-bold text-white">Yeni Grup Oluştur</h3>
+        <button data-close-modal="modal-new-chat" type="button" class="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-surface-800">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+      <form id="form-new-chat" class="p-5 space-y-4">
+        <div>
+          <label for="input-tg-chat-name" class="block text-xs font-semibold text-slate-300 mb-1.5">Grup Adı</label>
+          <input id="input-tg-chat-name" type="text" required maxlength="32" placeholder="Örn: Proje Ekibi" class="w-full bg-surface-850 border border-slate-700 focus:border-sky-500 rounded-xl px-3 py-2 text-sm text-white outline-none" />
+        </div>
+        <div>
+          <label for="select-tg-chat-type" class="block text-xs font-semibold text-slate-300 mb-1.5">Sohbet Türü</label>
+          <select id="select-tg-chat-type" class="w-full bg-surface-850 border border-slate-700 focus:border-sky-500 rounded-xl px-3 py-2 text-sm text-white outline-none">
+            <option value="group">Grup Sohbeti</option>
+            <option value="dm">Kişisel Sohbet</option>
+          </select>
+        </div>
+        <div class="flex justify-end gap-2 pt-2">
+          <button data-close-modal="modal-new-chat" type="button" class="px-3.5 py-2 rounded-xl bg-surface-800 hover:bg-surface-700 text-slate-300 text-sm font-medium transition">İptal</button>
+          <button type="submit" class="px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-sm font-semibold transition">Oluştur</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL 5: Edit Profile & @Username Modal -->
+  <div id="modal-profile" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs">
+    <div class="w-full max-w-sm rounded-2xl bg-surface-900 border border-slate-700/80 shadow-2xl overflow-hidden">
+      <div class="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
+        <h3 class="text-base font-bold text-white">Profil & Kullanıcı Adı</h3>
+        <button data-close-modal="modal-profile" type="button" class="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-surface-800">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+      <form id="form-profile" class="p-5 space-y-4">
+        <div>
+          <label for="input-username" class="block text-xs font-semibold text-slate-300 mb-1.5">Görünen Adın</label>
+          <input id="input-username" type="text" required maxlength="24" placeholder="Adın veya takma adın" class="w-full bg-surface-850 border border-slate-700 focus:border-indigo-500 rounded-xl px-3 py-2 text-sm text-white outline-none" />
+        </div>
+        <div>
+          <label for="input-userhandle" class="block text-xs font-semibold text-slate-300 mb-1.5">Kullanıcı Adın (@handle)</label>
+          <div class="relative">
+            <span class="absolute left-3 top-1/2 -translate-y-1/2 text-sky-400 font-mono text-sm">@</span>
+            <input id="input-userhandle" type="text" required maxlength="20" placeholder="kullanici_adi" class="w-full bg-surface-850 border border-slate-700 focus:border-sky-500 rounded-xl pl-7 pr-3 py-2 text-sm text-white font-mono outline-none" />
+          </div>
+          <p class="text-[11px] text-slate-400 mt-1">Arkadaşların sana bu kullanıcı adıyla ulaşır.</p>
+        </div>
+        <div>
+          <span class="block text-xs font-semibold text-slate-300 mb-2">Avatar Rengi</span>
+          <div id="color-picker" class="flex items-center gap-2.5"></div>
+        </div>
+        <div class="flex justify-end gap-2 pt-2">
+          <button data-close-modal="modal-profile" type="button" class="px-3.5 py-2 rounded-xl bg-surface-800 hover:bg-surface-700 text-slate-300 text-sm font-medium transition">İptal</button>
+          <button type="submit" class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold transition">Kaydet</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL 6: Image Lightbox -->
+  <div id="modal-lightbox" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-xs">
+    <button data-close-modal="modal-lightbox" type="button" class="absolute top-4 right-4 p-2 rounded-full bg-surface-800/80 text-white hover:bg-surface-700">
+      <i data-lucide="x" class="w-5 h-5"></i>
+    </button>
+    <img id="lightbox-img" src="" alt="Önizleme" class="max-w-full max-h-[88vh] rounded-xl shadow-2xl object-contain" />
+  </div>
+
+  <!-- Toast Container -->
+  <div id="toast-container" class="fixed bottom-20 right-4 z-50 flex flex-col gap-2 pointer-events-none max-w-xs w-full"></div>
+
+  <script>
+    (function () {
+      'use strict';
+
+      const AVATAR_COLORS = [
+        '#6366f1', '#10b981', '#f43f5e', '#f59e0b', '#0ea5e9', '#a855f7'
+      ];
+
+      const QUICK_EMOJIS = [
+        '😀', '😂', '🥰', '😎', '🤔', '🙌',
+        '👍', '❤️', '🔥', '👏', '🎉', '🚀',
+        '👌', '💯', '🎧', '🎙️', '⚡', '✨'
+      ];
+
+      const REACTION_EMOJIS = ['👍', '❤️', '🔥', '😂', '😮', '👏'];
+
+      const DEFAULT_ROOMS = [
+        { id: 'genel', name: 'Genel Sohbet', desc: 'Günlük sohbet ve anlık sesli buluşma odası', icon: 'volume-2' },
+        { id: 'oyun', name: 'Oyun Odası', desc: 'Düşük gecikmeli takım içi sesli iletişim', icon: 'gamepad-2' },
+        { id: 'muzik', name: 'Müzik & Chill', desc: 'Sakin sohbet ve ortak dinleme alanı', icon: 'music' },
+        { id: 'calisma', name: 'Çalışma Odası', desc: 'Odaklanma ve birlikte çalışma seansı', icon: 'laptop' }
+      ];
+
+      const DEFAULT_TG_CHATS = [
+        {
+          id: 'saved',
+          name: 'Kayıtlı Mesajlar',
+          handle: '',
+          type: 'saved',
+          color: '#0ea5e9',
+          status: 'Kişisel notların, sesli mesajların ve dosyaların',
+          pinnedId: null,
+          unread: 0
+        },
+        {
+          id: 'genel-grup',
+          name: 'Genel Grup',
+          handle: '#genel',
+          type: 'group',
+          color: '#6366f1',
+          status: 'Ortak sohbet grubu',
+          pinnedId: null,
+          unread: 0
+        }
+      ];
+
+      function normalizeHandle(raw) {
+        const cleaned = String(raw || '')
+          .toLowerCase()
+          .replace(/^@+/, '')
+          .replace(/[^a-z0-9_]/g, '')
+          .slice(0, 20);
+        return cleaned ? '@' + cleaned : '@kullanici' + Math.floor(100 + Math.random() * 899);
+      }
+
+      const defaultRandNum = Math.floor(100 + Math.random() * 899);
+      let savedProfile = { name: 'Kullanıcı ' + defaultRandNum, handle: '@kullanici' + defaultRandNum, color: '#6366f1' };
+      try {
+        const raw = localStorage.getItem('seslioda_profile');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && parsed.name) {
+            savedProfile = {
+              name: parsed.name,
+              handle: normalizeHandle(parsed.handle || parsed.name),
+              color: parsed.color || '#6366f1'
+            };
+          }
+        }
+      } catch (_) {}
+
+      const state = {
+        userId: 'user-' + Math.random().toString(36).slice(2, 8),
+        userName: savedProfile.name,
+        userHandle: savedProfile.handle,
+        userColor: savedProfile.color,
+        selectedColor: savedProfile.color,
+        serverConnected: false,
+        viewMode: 'chat',
+        sidebarTab: 'tg',
+        rooms: [...DEFAULT_ROOMS],
+        activeRoomId: 'genel',
+        inVoice: false,
+        isSimulatedMic: false,
+        micMuted: false,
+        deafened: false,
+        loopback: false,
+        pttEnabled: false,
+        pttActive: false,
+        micGain: 1.0,
+        outputVol: 1.0,
+        echoCancellation: true,
+        noiseSuppression: true,
+        sfxEnabled: true,
+        selectedDeviceId: 'default',
+        localSpeaking: false,
+        localLevel: 0,
+        remotePeer: null,
+        tabPeers: {},
+        onlineDirectory: {}, // handle -> { id, name, handle, color, source: 'server'|'tab'|'p2p', lastSeen }
+        messagesByRoom: {
+          genel: [],
+          oyun: [],
+          muzik: [],
+          calisma: []
+        },
+        tgChats: DEFAULT_TG_CHATS.map(c => ({ ...c })),
+        activeTgChatId: 'genel-grup',
+        tgChatSearchQuery: '',
+        tgInChatSearchOpen: false,
+        tgInChatSearchQuery: '',
+        tgReplyTo: null,
+        tgMessagesByChat: {
+          saved: [],
+          'genel-grup': []
+        },
+        chatOpenMobile: false
+      };
+
+      // --- Audio, Recorder, WebRTC & Optional Socket.io Refs ---
+      let audioCtx = null;
+      let rawStream = null;
+      let processedStream = null;
+      let micSourceNode = null;
+      let gainNode = null;
+      let analyserNode = null;
+      let destNode = null;
+      let loopbackGainNode = null;
+      let simOscNode = null;
+      let simGainNode = null;
+      let simInterval = null;
+      let vizRafId = null;
+      let pc = null;
+      let dataChannel = null;
+      let broadcastChannel = null;
+      let socket = null;
+      let typingTimeout = null;
+      let lastTypingSent = 0;
+
+      let mediaRecorder = null;
+      let recChunks = [];
+      let recStream = null;
+      let recTimerInterval = null;
+      let recSeconds = 0;
+      let currentPlayingAudio = null;
+      let currentPlayingBtn = null;
+
+      // --- DOM Elements ---
+      const els = {
+        networkModeBadge: document.getElementById('network-mode-badge'),
+        btnModeVoice: document.getElementById('btn-mode-voice'),
+        btnModeChat: document.getElementById('btn-mode-chat'),
+        tgTotalUnread: document.getElementById('tg-total-unread'),
+        sidebarTabVoice: document.getElementById('sidebar-tab-voice'),
+        sidebarTabTg: document.getElementById('sidebar-tab-tg'),
+        sidebarVoicePanel: document.getElementById('sidebar-voice-panel'),
+        sidebarTgPanel: document.getElementById('sidebar-tg-panel'),
+        voiceMainView: document.getElementById('voice-main-view'),
+        tgMainView: document.getElementById('tg-main-view'),
+        rightChat: document.getElementById('right-chat'),
+        roomsList: document.getElementById('rooms-list'),
+        activeRoomTitle: document.getElementById('active-room-title'),
+        activeRoomDesc: document.getElementById('active-room-desc'),
+        activeRoomIcon: document.getElementById('active-room-icon'),
+        participantCountPill: document.getElementById('participant-count-pill'),
+        participantsGrid: document.getElementById('participants-grid'),
+        p2pStatusPill: document.getElementById('p2p-status-pill'),
+        statusDot: document.getElementById('status-dot'),
+        statusLabel: document.getElementById('status-label'),
+        statusSublabel: document.getElementById('status-sublabel'),
+        pingBadge: document.getElementById('ping-badge'),
+        audioSourceBadge: document.getElementById('audio-source-badge'),
+        dbMeterText: document.getElementById('db-meter-text'),
+        canvas: document.getElementById('visualizer-canvas'),
+        btnJoinLeave: document.getElementById('btn-join-leave'),
+        btnSimVoice: document.getElementById('btn-sim-voice'),
+        btnMic: document.getElementById('btn-mic'),
+        iconMic: document.getElementById('icon-mic'),
+        labelMic: document.getElementById('label-mic'),
+        btnSidebarMute: document.getElementById('btn-sidebar-mute'),
+        btnDeafen: document.getElementById('btn-deafen'),
+        iconDeafen: document.getElementById('icon-deafen'),
+        labelDeafen: document.getElementById('label-deafen'),
+        btnDisconnect: document.getElementById('btn-disconnect'),
+        btnLoopback: document.getElementById('btn-loopback'),
+        btnPttToggle: document.getElementById('btn-ptt-toggle'),
+        pttBanner: document.getElementById('ptt-banner'),
+        btnPttHold: document.getElementById('btn-ptt-hold'),
+        chatMessages: document.getElementById('chat-messages'),
+        chatForm: document.getElementById('chat-form'),
+        chatInput: document.getElementById('chat-input'),
+        chatUnreadBadge: document.getElementById('chat-unread-badge'),
+        leftSidebar: document.getElementById('left-sidebar'),
+        mobileBackdrop: document.getElementById('mobile-backdrop'),
+        remoteAudio: document.getElementById('remote-audio'),
+        userAvatarBadge: document.getElementById('user-avatar-badge'),
+        userNameDisplay: document.getElementById('user-name-display'),
+        userHandleDisplay: document.getElementById('user-handle-display'),
+        // Telegram DOM
+        tgChatsList: document.getElementById('tg-chats-list'),
+        tgChatSearch: document.getElementById('tg-chat-search'),
+        tgVoiceMinibar: document.getElementById('tg-voice-minibar'),
+        tgVoiceMinibarText: document.getElementById('tg-voice-minibar-text'),
+        tgHeaderAvatar: document.getElementById('tg-header-avatar'),
+        tgHeaderTitle: document.getElementById('tg-header-title'),
+        tgHeaderBadge: document.getElementById('tg-header-badge'),
+        tgHeaderSub: document.getElementById('tg-header-sub'),
+        tgInChatSearchBar: document.getElementById('tg-inchat-search-bar'),
+        tgMsgSearchInput: document.getElementById('tg-msg-search-input'),
+        tgSearchCount: document.getElementById('tg-search-count'),
+        tgPinnedBar: document.getElementById('tg-pinned-bar'),
+        tgPinnedText: document.getElementById('tg-pinned-text'),
+        tgMessagesArea: document.getElementById('tg-messages-area'),
+        tgTypingBar: document.getElementById('tg-typing-bar'),
+        tgTypingText: document.getElementById('tg-typing-text'),
+        tgReplyBar: document.getElementById('tg-reply-bar'),
+        tgReplyAuthor: document.getElementById('tg-reply-author'),
+        tgReplyPreview: document.getElementById('tg-reply-preview'),
+        tgEmojiPopover: document.getElementById('tg-emoji-popover'),
+        tgEmojiGrid: document.getElementById('tg-emoji-grid'),
+        tgComposerForm: document.getElementById('tg-composer-form'),
+        tgComposerInput: document.getElementById('tg-composer-input'),
+        tgFileInput: document.getElementById('tg-file-input'),
+        tgRecordingBar: document.getElementById('tg-recording-bar'),
+        tgRecTimer: document.getElementById('tg-rec-timer'),
+        // Find User Modal
+        modalFindUser: document.getElementById('modal-find-user'),
+        modalMyHandle: document.getElementById('modal-my-handle'),
+        formFindUser: document.getElementById('form-find-user'),
+        inputFindHandle: document.getElementById('input-find-handle'),
+        onlineDirectoryCount: document.getElementById('online-directory-count'),
+        onlineUsersList: document.getElementById('online-users-list'),
+        // Other Modals
+        modalConnect: document.getElementById('modal-connect'),
+        modalSettings: document.getElementById('modal-settings'),
+        modalRoom: document.getElementById('modal-room'),
+        modalNewChat: document.getElementById('modal-new-chat'),
+        modalProfile: document.getElementById('modal-profile'),
+        modalLightbox: document.getElementById('modal-lightbox'),
+        lightboxImg: document.getElementById('lightbox-img'),
+        tabHost: document.getElementById('tab-host'),
+        tabJoin: document.getElementById('tab-join'),
+        panelHost: document.getElementById('panel-host'),
+        panelJoin: document.getElementById('panel-join'),
+        hostOfferCode: document.getElementById('host-offer-code'),
+        hostAnswerInput: document.getElementById('host-answer-input'),
+        guestOfferInput: document.getElementById('guest-offer-input'),
+        guestAnswerCode: document.getElementById('guest-answer-code'),
+        selectMic: document.getElementById('select-mic'),
+        sliderMicGain: document.getElementById('slider-mic-gain'),
+        valMicGain: document.getElementById('val-mic-gain'),
+        sliderOutputVol: document.getElementById('slider-output-vol'),
+        valOutputVol: document.getElementById('val-output-vol'),
+        chkEcho: document.getElementById('chk-echo'),
+        chkNoise: document.getElementById('chk-noise'),
+        chkSfx: document.getElementById('chk-sfx'),
+        formNewRoom: document.getElementById('form-new-room'),
+        inputRoomName: document.getElementById('input-room-name'),
+        inputRoomDesc: document.getElementById('input-room-desc'),
+        formNewChat: document.getElementById('form-new-chat'),
+        inputTgChatName: document.getElementById('input-tg-chat-name'),
+        selectTgChatType: document.getElementById('select-tg-chat-type'),
+        formProfile: document.getElementById('form-profile'),
+        inputUsername: document.getElementById('input-username'),
+        inputUserhandle: document.getElementById('input-userhandle'),
+        colorPicker: document.getElementById('color-picker'),
+        toastContainer: document.getElementById('toast-container')
+      };
+
+      // --- Utilities ---
+      function nowTime() {
+        const d = new Date();
+        return d.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+      }
+
+      function formatDuration(sec) {
+        const m = Math.floor(sec / 60);
+        const s = sec % 60;
+        return `${m}:${s < 10 ? '0' : ''}${s}`;
+      }
+
+      function formatFileSize(bytes) {
+        if (!bytes) return '0 B';
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+        return (bytes / 1048576).toFixed(1) + ' MB';
+      }
+
+      function getInitials(name) {
+        const clean = (name || 'K').replace(/^@/
